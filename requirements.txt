@@ -1,0 +1,16 @@
+# Orchestration & LLMs
+langchain==0.3.0
+langchain-core
+langchain-openai
+langchain-groq
+langgraph
+langsmith
+
+# Environment Variables
+python-dotenv
+
+# Data Science Core
+pandas
+scikit-learn
+matplotlib
+seaborn
