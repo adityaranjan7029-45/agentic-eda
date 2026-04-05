@@ -14,50 +14,75 @@ st.set_page_config(
 )
 
 # ==========================================
-# 🎨 Custom CSS Injection (Orange Theme)
+# 🎨 Custom CSS Injection (Animated Orange Theme)
 # ==========================================
 st.markdown("""
 <style>
-    /* Gradient Header Text */
+    /* 1. Page Fade-In Animation */
+    @keyframes fadeIn {
+        0% { opacity: 0; transform: translateY(20px); }
+        100% { opacity: 1; transform: translateY(0); }
+    }
+    
+    .block-container {
+        animation: fadeIn 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    /* 2. Gradient Header Text with subtle shift */
+    @keyframes gradientShift {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+
     .title-text {
-        background: -webkit-linear-gradient(45deg, #FF4B4B, #FF8C00);
+        background: linear-gradient(-45deg, #FF4B4B, #FF8C00, #FF3366, #FF8C00);
+        background-size: 300% 300%;
+        animation: gradientShift 6s ease infinite;
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 3em;
+        font-size: 3.5em;
         font-weight: 800;
         margin-bottom: 0px;
     }
     
-    /* Glowing Primary Buttons */
+    /* 3. Glowing, Breathing Primary Button */
+    @keyframes pulseGlow {
+        0% { box-shadow: 0 0 10px rgba(255, 140, 0, 0.4); }
+        50% { box-shadow: 0 0 25px rgba(255, 75, 75, 0.8); }
+        100% { box-shadow: 0 0 10px rgba(255, 140, 0, 0.4); }
+    }
+
     .stButton>button {
         background: linear-gradient(90deg, #FF4B4B 0%, #FF8C00 100%);
         color: white;
         border-radius: 8px;
         border: none;
-        box-shadow: 0 4px 15px rgba(255, 75, 75, 0.4);
+        animation: pulseGlow 2.5s infinite;
         transition: all 0.3s ease;
         font-weight: 600;
-    }
-    .stButton>button:hover {
-        box-shadow: 0 6px 20px rgba(255, 140, 0, 0.6);
-        transform: translateY(-2px);
+        text-transform: uppercase;
+        letter-spacing: 1px;
     }
     
-    /* File Uploader Customization */
+    .stButton>button:hover {
+        transform: translateY(-3px) scale(1.02);
+        animation: none; /* Stops the breathing while hovering */
+        box-shadow: 0 8px 25px rgba(255, 140, 0, 0.8);
+    }
+    
+    /* File Uploader Hover Animation */
     [data-testid="stFileUploadDropzone"] {
         border: 2px dashed #FF8C00;
         border-radius: 12px;
         background-color: rgba(255, 140, 0, 0.05);
-        transition: all 0.3s ease;
-    }
-    [data-testid="stFileUploadDropzone"]:hover {
-        background-color: rgba(255, 140, 0, 0.1);
-        border-color: #FF4B4B;
+        transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     }
     
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        border-right: 2px solid rgba(255, 140, 0, 0.2);
+    [data-testid="stFileUploadDropzone"]:hover {
+        background-color: rgba(255, 140, 0, 0.15);
+        border-color: #FF4B4B;
+        transform: scale(1.01);
     }
 </style>
 """, unsafe_allow_html=True)
