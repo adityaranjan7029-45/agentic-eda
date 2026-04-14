@@ -78,14 +78,25 @@ def profile_dataframe()->str:
 class PreprocessingPlan(BaseModel):
     steps:List[str] =Field(
         description="""Sequence of Preprocessing operations.
-        Allowed Values:
-        'type_conversion' (fixing incorrect datatypes),
-        'imputation' (handling missing values)
-        'feature_engineering' (creating new columns,extracting dates),
-        'encoding' (converting categories to numbers),
-        'scaling' (normalizing numerical ranges)"""
+        Allowed Values and their scopes:
+       1. 'data cleaning':First line of defense. Stripping whitespace, standarizing text casing, removing special characters/symbols from strings,and dropping exact duplicate rows.
+       2. 'type_conversion' :Casting datatypes. Includes parsing raw strings into datetimes, converting 'object' flags(Yes/No) to booleans, and downcasting numeric types for memory efficiency.
+       3. 'imputation': Handling missing/null values. Includes statistical fills (mean/median/mode), forward/backward fills for time-series, or creating 'missing_indicator' boolean columns.
+       4. 'outlier_handling': Identifying and treating extreme values. Includes Winsorization (capping/clipping at percentiles) or dropping impossible values based on domain logic.
+       5. 'feature_engineering': Creating new predictive signals. Includes mathematical interaction terms(Col_A/Col_B, Col_A*Col_B, Col_A-Col_B, etc.),extracting cyclical time features (hour, day of week),sine/cosine transforms),text length/word count extraction, and binning/bucketing continuous variables into categories.
+       6. 'encoding': converting categorical strings to machine - readable numbers.Includes One-Hot Encoding for nominal data, Ordinal Encoding for ranked data, or Frequency/Target encoding for high-cardinality features.
+       7. 'feature_transformation': Handling non-Gaussian, skewed distributions. Includes Applying Logarithmic, Box-Cox, Yeo-Johnson, or Frequency/Target encoding for high-cardinality features.
+       8. 'scaling': Equalizing the magnitude of numeric features. Includes Standard Scaling (Z-score), Min-Max Scaling, or Robust Scaling(using IQR to ignore outliers).
+       9. 'dimensionality_reduction': Reducing the number of features. Includes PCA (Principal Component Analysis) for linear reduction or t-SNE/UMAP for non-linear reduction.
+       10. 'feature_selection': Final cleanup. Dropping zero-variance columns, removing redundant ID columns, or dropping highly correlated features to prevent multicollinearity.
+        '"""
     )
     reasoning: str=Field(
-        description=
+        description=""" Detailed Chain-of-Thought reasoning for the preprocessing steps.
+        Explain exactly WHY each step was chosen, referencing specific columns and data patterns seen in the profile. 
+        Explain the logical ORDER of operations (e.g., 'We must handle outliers before scaling', or 'We must convert types before extracting date features')."""
     )
+
+        
+    
 
