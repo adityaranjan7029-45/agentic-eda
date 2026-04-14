@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import sqlite3
+import io
 from langchain_core.tools import tool
 
 df=None
@@ -14,7 +15,7 @@ def load_dataset(file_path: str)-> str:
     global df
 
     try:
-        _, ext =os.path.splittext(file_path)
+        _, ext =os.path.splitext(file_path)
         ext=ext.lower()
 
         if ext=='.csv':
@@ -43,3 +44,31 @@ def load_dataset(file_path: str)-> str:
     except Exception as e:
         # If the file is missing or corrupted, tell the LLM so it doesn't crash
         return f"Error loading data: {str(e)}"
+
+@tool
+def profile_dataframe()->str:
+    """
+    Calling this tool to get a statistical summary of the loaded dataset.
+    """
+    global df
+    if df is None:
+        return "Error: No dataset loaded. Please call load_dataset() first."
+    
+    #1. Get df.info()
+    buffer=io.StringIO() # here adding a buffer to store the df.info() output.
+    df.info(buf=buffer)
+    info_str=buffer.getvalue()
+    
+    #2. get null summary
+    null_counts=df.isnull().sum()
+    null_summary = null_counts[null_counts>0]
+    info_str += f"\n\nNull values:\n{null_summary.to_string() if len(null_summary) >  0 else 'None'}"
+
+    #3. Add a sample of data for the llm to see what 'objects' actually look like
+    info_str += "\n\nSample Data (First 5 rows):\n"
+    info_str += df.head().to_string()
+
+    return info_str
+
+
+    
