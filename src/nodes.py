@@ -4,6 +4,8 @@ import sqlite3
 import io
 from pydantic import BaseModel, Field
 from typing import List
+from typing import TypedDict
+from langgraph.graph import StateGraph, END
 from langchain_core.tools import tool
 
 df=None
@@ -79,7 +81,7 @@ class PreprocessingPlan(BaseModel):
     steps:List[str] =Field(
         description="""Sequence of Preprocessing operations.
         Allowed Values and their scopes:
-       1. 'data cleaning':First line of defense. Stripping whitespace, standarizing text casing, removing special characters/symbols from strings,and dropping exact duplicate rows.
+       1. 'data_cleaning':First line of defense. Stripping whitespace, standarizing text casing, removing special characters/symbols from strings,and dropping exact duplicate rows.
        2. 'type_conversion' :Casting datatypes. Includes parsing raw strings into datetimes, converting 'object' flags(Yes/No) to booleans, and downcasting numeric types for memory efficiency.
        3. 'imputation': Handling missing/null values. Includes statistical fills (mean/median/mode), forward/backward fills for time-series, or creating 'missing_indicator' boolean columns.
        4. 'outlier_handling': Identifying and treating extreme values. Includes Winsorization (capping/clipping at percentiles) or dropping impossible values based on domain logic.
@@ -96,6 +98,25 @@ class PreprocessingPlan(BaseModel):
         Explain exactly WHY each step was chosen, referencing specific columns and data patterns seen in the profile. 
         Explain the logical ORDER of operations (e.g., 'We must handle outliers before scaling', or 'We must convert types before extracting date features')."""
     )
+
+    #Defining the memory of my langgraph.
+
+    class GraphState(TypedDict):
+        df: pd.DataFrame
+        plan:PreprocessingPlan
+
+    def data_cleaning_node(state:GraphState):
+        print("\n--- Starting Data Cleaning ---")
+        df,plan=state["df"].copy(),state["plan"]
+        #Drop the logic here.df
+
+        plan.steps.pop(0) #Mark step as complete
+        return {"df": df, "plan":plan}
+        
+
+            
+
+
 
         
     
