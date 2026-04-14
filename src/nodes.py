@@ -2,6 +2,8 @@ import pandas as pd
 import os
 import sqlite3
 import io
+from pydantic import BaseModel, Field
+from typing import List
 from langchain_core.tools import tool
 
 df=None
@@ -71,4 +73,19 @@ def profile_dataframe()->str:
     return info_str
 
 
-    
+#Here in this class i am literally just doing prompt engineering. Just giving clear prompts to the LLM to work.
+#The LLM will look at the profile_dataframe() output and decide what to do.
+class PreprocessingPlan(BaseModel):
+    steps:List[str] =Field(
+        description="""Sequence of Preprocessing operations.
+        Allowed Values:
+        'type_conversion' (fixing incorrect datatypes),
+        'imputation' (handling missing values)
+        'feature_engineering' (creating new columns,extracting dates),
+        'encoding' (converting categories to numbers),
+        'scaling' (normalizing numerical ranges)"""
+    )
+    reasoning: str=Field(
+        description=
+    )
+
