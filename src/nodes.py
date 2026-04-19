@@ -1,10 +1,12 @@
 import pandas as pd
+import numpy as np
 import os
 import sqlite3
 import io
 from pydantic import BaseModel, Field
 from typing import List
 from typing import TypedDict
+import re
 from langgraph.graph import StateGraph, END
 from langchain_core.tools import tool
 
@@ -104,14 +106,64 @@ class PreprocessingPlan(BaseModel):
     class GraphState(TypedDict):
         df: pd.DataFrame
         plan:PreprocessingPlan
+        
 
+    
     def data_cleaning_node(state:GraphState):
-        print("\n--- Starting Data Cleaning ---")
-        df,plan=state["df"].copy(),state["plan"]
-        #Drop the logic here.df
+        print("-> Executing Data Cleaning...")
+        df = state["df"].copy()
+        plan = state["plan"]
+        
+        # 1. Drop completely empty rows and columns
+        # If a row or column is 100% missing data, it offers no signal.
+        df.dropna(how='all', inplace=True)
+        df.dropna(axis=1, how='all', inplace=True)
+        
+        # 2. Standardize Column Names
+        # Converts "First Name!" to "first_name". Prevents key errors later.
+        def clean_col_name(col_name):
+            col = str(col_name).lower().strip()
+            col = re.sub(r'[^a-z0-9_]+', '_', col) # Replace non-alphanumerics with '_'
+            col = re.sub(r'_+', '_', col)          # Remove double underscores
+            return col.strip('_')                  # Strip leading/trailing underscores
+        
+        df.rename(columns=lambda x: clean_col_name(x), inplace=True)
+        
+        # 3. Drop exact duplicate rows
+        # Retaining identical observations biases model training.
+        df.drop_duplicates(inplace=True)
+        
+        # 4. Standardize Object/String Columns & Expose Hidden Nulls
+        obj_cols = df.select_dtypes(include=['object', 'string']).columns
+        
+        # List of common junk values that are actually missing data
+        hidden_nulls = ["", " ", "null", "none", "n/a", "na", "?", "-", "undefined", "unknown"]
+        
+        for col in obj_cols:
+            # A. Convert to string to avoid errors with mixed types
+            # B. Strip leading/trailing whitespace
+            # C. Convert everything to lowercase for categorical consistency
+            df[col] = df[col].astype(str).str.strip().str.lower()
+            
+            # D. Replace those junk values with actual np.nan
+            df[col] = df[col].replace(hidden_nulls, np.nan)
+            
+            # E. Re-replace empty strings that might have been created by stripping
+            df[col] = df[col].replace('', np.nan)
+            
+            # F. (Optional but recommended) If a column was purely numeric but stored 
+            # as a string with commas/dollars (e.g., "$1,000"), stripping text allows
+            # the subsequent type_conversion_node to easily cast it to float.
+            df[col] = df[col].str.replace('$', '', regex=False).str.replace(',', '', regex=False)
 
-        plan.steps.pop(0) #Mark step as complete
-        return {"df": df, "plan":plan}
+        # 5. Reset index after dropping rows
+        df.reset_index(drop=True, inplace=True)
+
+        # Update Graph State
+        completed_step = plan.steps.pop(0)
+        print(f"   [+] Completed: {completed_step}. Dataset shape is now {df.shape}.")
+        
+        return {"df": df, "plan": plan}
         
 
             
