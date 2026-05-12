@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph, END
 from langchain_core.tools import tool
 from sklearn.preprocessing import PowerTransformer
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
 df=None
 
@@ -483,6 +484,17 @@ def scaling_node(state: GraphState):
     print(f"   [+] Completed: {completed_step}. Standardized {len(cols_to_scale)} continuous features.")
     
     return {"df": df, "plan": plan}
+
+
+def dimensionality_reduction_node(state: GraphState):
+    print("-> Executing Dimensionality Reduction...")
+
+    df = state["df"].copy()
+    plan = state["plan"]
+    target_col = state.get("target_col" , None) #safely get the target if it exists.None
+
+    
+
 
 
         
