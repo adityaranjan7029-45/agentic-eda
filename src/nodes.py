@@ -10,6 +10,7 @@ import re
 from langgraph.graph import StateGraph, END
 from langchain_core.tools import tool
 from sklearn.preprocessing import PowerTransformer
+from sklearn.preprocessing import StandardScaler
 
 df=None
 
@@ -446,6 +447,42 @@ def feature_transformation_node(state: GraphState):
     
     return {"df": df, "plan": plan}
 
+def scaling_node(state: GraphState):
+    print("-> Executed Scaling...")
+
+    # 1. Extract state
+    df=state["df"].copy()
+    plan=state["plan"]
+
+    # 2. Isolate continuous numerical columns.
+    # We look for all numbers, but we Must filter out boolean/dummy variables.\
+
+    num_cols=df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
+
+    cols_to_scale = []
+    for col in num_cols:
+        # A true continuous feature (like Age or Salary) will have many unique values.
+        # If a column has 2 unique values (e.g., 0 and 1), it is an encoded category.
+        # We leave the 0s and 1s completely alone.
+
+        if df[col].nunique() > 2:
+            cols_to_scale.append(col)
+    
+    # 3. Apply Standard Scaling (Z-score Normalization)
+
+    if len(cols_to_scale) > 0:
+        scaler = StandardScaler()
+
+        #fit_transform calculates the mean and variance, then scales the data.
+        #It returns a raw numpy matrix, so we carefully overwrite only the specific columns in our dataframe.
+
+        df[cols_to_scale] = scaler.fit_transform(df[cols_to_scale])
+
+    # 4. Update Graph State
+    completed_step = plan.steps.pop(0)
+    print(f"   [+] Completed: {completed_step}. Standardized {len(cols_to_scale)} continuous features.")
+    
+    return {"df": df, "plan": plan}
 
 
         
