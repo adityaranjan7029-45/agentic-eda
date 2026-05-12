@@ -9,6 +9,7 @@ from typing import TypedDict
 import re
 from langgraph.graph import StateGraph, END
 from langchain_core.tools import tool
+from sklearn.preprocessing import PowerTransformer
 
 df=None
 
@@ -402,6 +403,46 @@ def encoding_node(state: GraphState):
     # 6. Update Graph State
     completed_step = plan.steps.pop(0)
     print(f"   [+] Completed: {completed_step}. Dataset is now 100% numerical (Shape: {df.shape}).")
+    
+    return {"df": df, "plan": plan}
+
+
+def feature_transformation_node(state: GraphState):
+    print("-> Executing Feature Transformation...")
+    
+    # 1. Extract state
+    df = state["df"].copy()
+    plan = state["plan"]
+    
+    # 2. Identify continuous numerical columns
+    # We only want to transform true continuous numbers, not 0/1 boolean columns from encoding.
+    num_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
+    cols_to_transform = [col for col in num_cols if df[col].nunique() > 2]
+    
+    transformed_count = 0
+    
+    for col in cols_to_transform:
+        # 3. Check Skewness
+        # A perfectly normal bell curve has a skew of 0. 
+        # Anything > 1 or < -1 is considered highly skewed.
+        skewness = df[col].skew()
+        
+        if abs(skewness) > 1.0:
+            try:
+                # 4. Apply Yeo-Johnson Power Transformation
+                # This mathematically squishes the long tail to create a bell curve.
+                pt = PowerTransformer(method='yeo-johnson')
+                
+                # fit_transform expects a 2D array, so we pass df[[col]]
+                df[col] = pt.fit_transform(df[[col]])
+                transformed_count += 1
+            except Exception:
+                # If a specific column fails mathematically, safely skip it
+                pass
+
+    # 5. Update Graph State
+    completed_step = plan.steps.pop(0)
+    print(f"   [+] Completed: {completed_step}. Reshaped {transformed_count} highly skewed columns into bell curves.")
     
     return {"df": df, "plan": plan}
 
