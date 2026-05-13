@@ -491,9 +491,16 @@ def dimensionality_reduction_node(state: GraphState):
 
     df = state["df"].copy()
     plan = state["plan"]
-    target_col = state.get("target_col" , None) #safely get the target if it exists.None
+    target_col = state.get("target_col" , None) #safely get the target if it exists.
 
+    # 1. Isolate the target variable so PCA doesn't destroy it
+    target_data = None
+    if target_col and target_col in df.columns:
+        target_data = df.pop(target_col)
+        print(f"   [!] Isolated target column '{target_col}' from compression.")
     
+
+
 
 
 
