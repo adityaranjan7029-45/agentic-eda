@@ -498,13 +498,61 @@ def dimensionality_reduction_node(state: GraphState):
     if target_col and target_col in df.columns:
         target_data = df.pop(target_col)
         print(f"   [!] Isolated target column '{target_col}' from compression.")
-    ]
+    
     #2. Dynamic threshold 
     # Only compress if we still have too many feature columns.
     if len(df.columns)>15:
         original_cols = len(df.columns)
 
+        # 3. Variance based PCA
+        pca = PCA(n_components=0.95,random_state=42)
+        pca_matrix = pca.fit_transform(df)
 
+        # 4. Rebuild the DataFrame with new PC names
+
+        df = pd.DataFrame(
+            pca_matrix,
+            columns=[f"PC_{i+1}" for i in range(pca_matrix.shape[1])]
+        )
+
+        print(f"   [+] Compressed {original_cols} features down to {len(df.columns)} Principal Components (Retained 95% variance).")
+    else:
+        print(f"   [+] Skipped PCA. Feature space is already lean ({len(df.columns)} columns).")
+
+        # 5. Glue the target variable back onto the dataframe
+        if target_data is not None:
+            df.reset_index(drop=True , inplace=True)
+            target_data.reset_index(drop=True, inplace=True)
+            df[target_col] = target_data
+
+        # 6.Update State
+        completed_step = plan.steps.pop(0)
+        return {"df": df, "plan": plan}
+
+
+def feature_selection_node(state:GraphState):
+    print("-> Executing Feature Selection...")
+
+    df = state["df"]
+    plan = state["plan"]
+    target = state.get("target_col", None)
+
+    # 1. Isolate the target variable so we don't accidentally drop it!
+    target_data = None
+    if target and target in df.columns:
+        target_data = df.pop(target)
+    cols_to_drop = set()
+
+    # 2. Drop Zero-variance Features
+    # If a column is exactly the same for every single row , it provides 0 information.
+
+    for col in df.columns:
+        if df[col].nunique() <= 1:
+            cols_to_drop.add(col)
+    
+    
+
+    
 
 
         
