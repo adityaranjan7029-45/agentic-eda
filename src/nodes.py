@@ -535,12 +535,12 @@ def feature_selection_node(state:GraphState):
 
     df = state["df"]
     plan = state["plan"]
-    target = state.get("target_col", None)
+    target_col = state.get("target_col", None)
 
     # 1. Isolate the target variable so we don't accidentally drop it!
     target_data = None
-    if target and target in df.columns:
-        target_data = df.pop(target)
+    if target_col and target_col in df.columns:
+        target_data = df.pop(target_col)
     cols_to_drop = set()
 
     # 2. Drop Zero-variance Features
@@ -550,7 +550,42 @@ def feature_selection_node(state:GraphState):
         if df[col].nunique() <= 1:
             cols_to_drop.add(col)
     
+    #3. Drop Highly Correlated Features ((Multicollinearity Filter)
+    # We only run this if PCA was skipped (if PCA ran, columns will start with 'PC_)
+    if not any(col.startswith('PC_') for col in df.columns):
+        
+        # Calculate the absolute correlation matrix
+        corr_matrix = df.corr().abs()
+        
+        # Select the upper triangle of the matrix to avoid duplicating checks
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        
+        # If two columns have > 90% correlation, they are practically the same thing.
+        # We flag one of them to be dropped to reduce noise.
+        for column in upper.columns:
+            if any(upper[column] > 0.90):
+                cols_to_drop.add(column)
     
+
+    # 4. Execute the Drop
+    if cols_to_drop:
+        df.drop(columns=list(cols_to_drop), inplace=True)
+        print(f"   [!] Dropped {len(cols_to_drop)} redundant/useless features: {list(cols_to_drop)}")
+    else:
+        print("   [+] No redundant features found. Feature space is optimal.")
+
+    # 5. Glue the target variable back on
+    if target_data is not None:
+        df[target_col] = target_data
+
+    # 6. Update Graph State
+    if plan.steps:
+        completed_step = plan.steps.pop(0)
+        print(f"   [+] Completed: {completed_step}. Final matrix shape ready for ML: {df.shape}")
+    else:
+        print(f"   [+] Final matrix shape ready for ML: {df.shape}")
+    
+    return {"df": df, "plan": plan}
 
     
 
