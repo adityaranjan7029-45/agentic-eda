@@ -498,8 +498,11 @@ def dimensionality_reduction_node(state: GraphState):
     if target_col and target_col in df.columns:
         target_data = df.pop(target_col)
         print(f"   [!] Isolated target column '{target_col}' from compression.")
-    
-
+    ]
+    #2. Dynamic threshold 
+    # Only compress if we still have too many feature columns.
+    if len(df.columns)>15:
+        original_cols = len(df.columns)
 
 
 
