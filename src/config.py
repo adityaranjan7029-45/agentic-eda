@@ -5,9 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def get_llm():
+def get_llm(model: str = None):
     """
-    Returns a configured LLM instance for the Planner (and any other) node.
+    Returns a configured LLM instance for any node that needs one.
+
+    model: optional override for the model name, so different agents can use
+    different models through the same provider/API key (e.g. a bigger model
+    for the Insight/Critic agents, a smaller/faster one for Synthesis).
+    If omitted, falls back to the provider's default env var, same as before.
 
     Which backend gets used is controlled by the LLM_PROVIDER env var:
 
@@ -38,14 +43,14 @@ def get_llm():
         from langchain_groq import ChatGroq
 
         api_key = os.getenv("GROQ_API_KEY")
-        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        resolved_model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
         if not api_key:
             raise ValueError("GROQ_API_KEY not found in .env (get a free key at console.groq.com)")
 
         return ChatGroq(
             api_key=api_key,
-            model=model,
+            model=resolved_model,
             temperature=temperature,
         )
 
@@ -53,7 +58,7 @@ def get_llm():
         from langchain_openai import ChatOpenAI
 
         api_key = os.getenv("HF_TOKEN")
-        model = os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+        resolved_model = model or os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 
         if not api_key:
             raise ValueError("HF_TOKEN not found in .env (get a free token at huggingface.co/settings/tokens)")
@@ -63,7 +68,7 @@ def get_llm():
         return ChatOpenAI(
             api_key=api_key,
             base_url="https://router.huggingface.co/v1",
-            model=model,
+            model=resolved_model,
             temperature=temperature,
         )
 
@@ -71,14 +76,14 @@ def get_llm():
         from langchain_openai import ChatOpenAI
 
         api_key = os.getenv("OPENAI_API_KEY")
-        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        resolved_model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in .env")
 
         return ChatOpenAI(
             api_key=api_key,
-            model=model,
+            model=resolved_model,
             temperature=temperature,
         )
 
