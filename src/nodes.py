@@ -109,6 +109,8 @@ class PreprocessingPlan(BaseModel):
 class GraphState(TypedDict):
         df: pd.DataFrame
         plan:PreprocessingPlan
+        target_col: str
+        insights: list
         
 
     
