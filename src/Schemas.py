@@ -39,3 +39,42 @@ class InsightReport(BaseModel):
         "importance descending. Quality over quantity -- do not pad with "
         "restated summary statistics that aren't actually insightful."
     )
+
+
+class ChartSpec(BaseModel):
+    filename: str = Field(
+        description="A short filename for this chart, e.g. 'age_vs_income_scatter.png'. "
+        "Letters, numbers, underscores, hyphens only -- no slashes or spaces."
+    )
+    title: str = Field(description="Short, specific chart title, e.g. 'Income rises with age (r=0.71)'.")
+    rationale: str = Field(
+        description="One sentence: which insight or pattern this chart supports and why "
+        "this chart type is the right way to show it."
+    )
+    code: str = Field(
+        description="Self-contained Python code to draw this ONE chart. You may ONLY use "
+        "these pre-provided variables -- do not write any import statements: "
+        "`df` (the pandas DataFrame), `plt` (matplotlib.pyplot), `sns` (seaborn), "
+        "`pd` (pandas), `np` (numpy), and `save_path` (a string -- the file path to save "
+        "to). The code MUST end with exactly these three lines, in order: "
+        "plt.tight_layout() then plt.savefig(save_path) then plt.close()."
+    )
+
+
+class VisualizationPlan(BaseModel):
+    charts: List[ChartSpec] = Field(
+        description="2 to 5 charts, each grounded in a real insight or pattern in the data. "
+        "Prefer variety (don't make 5 histograms) and prefer charts that make an insight "
+        "visually obvious at a glance."
+    )
+
+
+class CriticVerdict(BaseModel):
+    approved: bool = Field(
+        description="True only if the report is accurate to the source insights, "
+        "specific (not generic filler), and free of invented numbers or claims."
+    )
+    feedback: str = Field(
+        description="If approved=False: specific, actionable instructions for what to fix "
+        "in the next draft. If approved=True: a one-sentence confirmation of why it's good."
+    )
