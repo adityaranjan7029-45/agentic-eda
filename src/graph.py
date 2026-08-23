@@ -1,4 +1,26 @@
+"""
+LangGraph wiring for Agentic EDA.
+
+Architecture: a single Planner Agent (LLM) reads the dataset profile and
+decides which preprocessing steps are needed and in what order. Every step
+after that is executed by the existing hand-written, deterministic pandas
+functions in src/nodes.py -- the LLM never writes or executes code, it only
+chooses and sequences steps from a fixed, known-safe vocabulary.
+
+Flow:
+    planner -> (conditional routing on plan.steps) -> step node -> ... -> END
+"""
+
+import builtins
 import io
+import os
+import re
+import signal
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend -- we only ever save figures, never display them
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 import pandas as pd
 
 from langgraph.graph import StateGraph, END
@@ -19,7 +41,7 @@ from src.nodes import (
     feature_selection_node,
 )
 # pyrefly: ignore [missing-import]
-from src.schemas import InsightReport
+from src.schemas import InsightReport, VisualizationPlan, CriticVerdict
 
 # Which Groq model each agent uses. Kept as one dict so model choices are
 # visible/tunable in one place instead of scattered through node functions.
@@ -27,7 +49,13 @@ AGENT_MODELS = {
     "planner": None,  # None = fall back to GROQ_MODEL in .env (default llama-3.3-70b-versatile)
     "insight": "openai/gpt-oss-120b",
     "synthesis": "llama-3.1-8b-instant",  # fast/cheap model -- this is a writing/formatting task, not deep reasoning
+    "visualization": "openai/gpt-oss-120b",
+    "critic": "openai/gpt-oss-120b",
 }
+
+CHARTS_DIR = "charts"
+MAX_CHART_FIX_ATTEMPTS = 2  # how many times we let the LLM try to fix its own broken chart code
+MAX_CRITIC_REVISIONS = 2  # how many times the Critic can send the report back before we ship it anyway
 
 # Must exactly match the step names described in PreprocessingPlan (src/nodes.py)
 # and the node names registered in build_graph() below.
@@ -202,6 +230,8 @@ def synthesis_agent_node(state: GraphState):
     df = state["df"]
     insights = state.get("insights", [])
     steps_taken = state.get("steps_taken", [])
+    charts = state.get("charts", [])
+    critic_feedback = state.get("critic_feedback")
 
     llm = get_llm(model=AGENT_MODELS["synthesis"])
 
@@ -214,6 +244,16 @@ def synthesis_agent_node(state: GraphState):
 
     steps_block = ", ".join(steps_taken) if steps_taken else "No preprocessing was needed -- data was already clean."
 
+    charts_block = "\n".join(f"- {c['title']} ({c['path']}): {c['rationale']}" for c in charts) or "No charts were generated."
+
+    # On a revision (the Critic sent this back), tell the LLM exactly what to fix.
+    # On a first draft, this is just empty.
+    revision_block = (
+        f"\n\nIMPORTANT -- a previous draft of this report was reviewed and REJECTED. "
+        f"You must specifically address this feedback in your rewrite: {critic_feedback}"
+        if critic_feedback else ""
+    )
+
     prompt = f"""You are writing the final report for a data analysis pipeline that
 just ran automatically. Write it for a stakeholder who is NOT a data scientist.
 
@@ -223,13 +263,16 @@ Final dataset shape after preprocessing: {df.shape[0]} rows, {df.shape[1]} colum
 Insights found (ranked by importance, most important first):
 {insights_block}
 
+Charts generated (reference these by title where relevant in Key Findings):
+{charts_block}
+
 Write a well-organized Markdown report with these sections:
 1. ## Overview -- one paragraph, plain language, what this dataset is and what was done to it.
 2. ## Data Preparation Summary -- briefly explain the preprocessing steps applied and why (in plain terms).
-3. ## Key Findings -- expand each insight into a short readable paragraph, most important first. Keep the real numbers from the evidence.
+3. ## Key Findings -- expand each insight into a short readable paragraph, most important first. Keep the real numbers from the evidence. Mention the relevant chart by title where one exists.
 4. ## Recommended Next Steps -- 2-4 concrete, sensible actions based on the findings.
 
-Do not invent any numbers, columns, or findings that aren't given above.
+Do not invent any numbers, columns, or findings that aren't given above.{revision_block}
 """
 
     response = llm.invoke(prompt)
@@ -238,6 +281,212 @@ Do not invent any numbers, columns, or findings that aren't given above.
     print("   [+] Report generated.")
 
     return {"report_markdown": report_markdown}
+
+
+class ChartExecutionTimeout(Exception):
+    """Raised when generated chart code runs too long -- catches infinite
+    loops or accidentally-huge plotting operations."""
+
+
+def _timeout_handler(signum, frame):
+    raise ChartExecutionTimeout("Chart code took too long to run (possible infinite loop)")
+
+
+# Deliberately small: only what typical matplotlib/seaborn snippets need.
+# Notably absent: __import__, open, eval, exec, compile, getattr, globals,
+# locals, vars -- so generated code CANNOT import a new module, touch the
+# filesystem outside of the one save_path we hand it, or introspect its way
+# around the sandbox.
+_SAFE_BUILTINS = {
+    name: getattr(builtins, name)
+    for name in [
+        "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
+        "len", "list", "max", "min", "print", "range", "round", "set",
+        "sorted", "str", "sum", "tuple", "zip", "isinstance",
+    ]
+}
+_SAFE_BUILTINS.update({"True": True, "False": False, "None": None})
+
+
+def execute_chart_code(code: str, df: pd.DataFrame, save_path: str, timeout_seconds: int = 15):
+    """Runs one chart's LLM-generated code in a restricted exec() sandbox.
+
+    Only df/plt/sns/pd/np/save_path are reachable -- no import statement can
+    succeed (no __import__ in the builtins), and no other file on disk can be
+    touched (nothing hands the code a real `open`). A SIGALRM-based timeout
+    guards against runaway loops. Any exception -- SyntaxError, NameError,
+    KeyError from a wrong column name, the timeout, whatever -- propagates up
+    to the caller, which is what drives the self-healing retry."""
+
+    sandbox_globals = {
+        "__builtins__": _SAFE_BUILTINS,
+        "df": df,
+        "plt": plt,
+        "sns": sns,
+        "pd": pd,
+        "np": np,
+        "save_path": save_path,
+    }
+
+    use_alarm = hasattr(signal, "SIGALRM")  # SIGALRM doesn't exist on Windows
+    if use_alarm:
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(timeout_seconds)
+
+    try:
+        exec(code, sandbox_globals)
+    finally:
+        if use_alarm:
+            signal.alarm(0)
+        plt.close("all")  # always clean up figures, success or failure
+
+
+def _strip_code_fences(text: str) -> str:
+    """LLMs love wrapping code in ```python ... ``` even when told not to.
+    Strips that off so exec() gets plain Python."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+    return text.strip()
+
+
+def visualization_agent_node(state: GraphState):
+    """Fourth LLM call in the graph, and the only node in the whole pipeline
+    where LLM-written code actually executes. Runs after the Insight Agent:
+    decides which charts best show off the findings, writes the matplotlib/
+    seaborn code for each, and runs it in the sandbox above. If a chart's
+    code throws, the real error is sent back to the LLM to fix -- up to
+    MAX_CHART_FIX_ATTEMPTS times -- before that one chart is skipped
+    (skipping never crashes the graph; charts are a bonus, not a requirement
+    for the pipeline to finish)."""
+    print("-> Visualization Agent: Planning and generating charts...")
+
+    df = state["df"]
+    insights = state.get("insights", [])
+
+    os.makedirs(CHARTS_DIR, exist_ok=True)
+
+    llm = get_llm(model=AGENT_MODELS["visualization"])
+    structured_llm = llm.with_structured_output(VisualizationPlan)
+
+    insights_block = "\n".join(
+        f"- {ins['title']}: {ins['description']} (Evidence: {ins['supporting_stat']})"
+        for ins in insights
+    ) or "No specific insights were provided -- use your judgement on what's worth showing."
+
+    columns_block = ", ".join(f"{col} ({dtype})" for col, dtype in df.dtypes.items())
+
+    prompt = f"""You are a data visualization expert. Propose 2 to 5 charts that best
+illustrate the findings below, using matplotlib/seaborn.
+
+Available columns and dtypes: {columns_block}
+
+Findings to visualize:
+{insights_block}
+
+For each chart, write short, correct Python code using ONLY the pre-provided variables
+`df`, `plt`, `sns`, `pd`, `np`, and `save_path` -- do NOT write any import statement,
+do NOT use open/exec/eval/os/sys, do NOT reference any file path other than save_path.
+End every chart's code with exactly:
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+"""
+
+    plan = structured_llm.invoke(prompt)
+
+    generated_charts = []
+
+    for chart in plan.charts:
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", chart.filename) or "chart.png"
+        if not safe_name.lower().endswith(".png"):
+            safe_name += ".png"
+        save_path = os.path.join(CHARTS_DIR, safe_name)
+
+        code = _strip_code_fences(chart.code)
+        last_error = None
+
+        for attempt in range(MAX_CHART_FIX_ATTEMPTS + 1):
+            try:
+                execute_chart_code(code, df, save_path)
+                print(f"   [+] Saved chart: {save_path} ({chart.title})")
+                generated_charts.append(
+                    {"title": chart.title, "rationale": chart.rationale, "path": save_path}
+                )
+                last_error = None
+                break
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                print(f"   [!] Chart '{chart.title}' failed on attempt {attempt + 1}: {last_error}")
+
+                if attempt < MAX_CHART_FIX_ATTEMPTS:
+                    # Self-healing loop, scoped to just this one chart's code --
+                    # the real traceback goes back to the LLM to fix.
+                    fix_llm = get_llm(model=AGENT_MODELS["visualization"])
+                    fix_prompt = f"""This matplotlib/seaborn code failed with this error:
+{last_error}
+
+Code:
+{code}
+
+Rewrite ONLY the code to fix the error. Same rules as before: only use
+df/plt/sns/pd/np/save_path, no imports, must end with plt.tight_layout(),
+plt.savefig(save_path), plt.close(). Return ONLY the corrected Python code."""
+                    fixed = fix_llm.invoke(fix_prompt)
+                    code = _strip_code_fences(fixed.content)
+
+        if last_error is not None:
+            print(f"   [x] Giving up on chart '{chart.title}' after {MAX_CHART_FIX_ATTEMPTS + 1} attempts.")
+
+    print(f"   [+] {len(generated_charts)}/{len(plan.charts)} charts generated successfully.")
+
+    return {"charts": generated_charts}
+
+
+def critic_agent_node(state: GraphState):
+    """Fifth LLM call in the graph. Runs after Synthesis. Reviews the final
+    report against the actual insights it's supposed to be based on, and can
+    reject it -- sending the graph back to Synthesis with concrete feedback.
+    This is the pipeline's real self-healing/reflection step: instead of
+    catching a code traceback, it catches a REASONING failure (a report that
+    invents numbers, or is too vague to be useful)."""
+    print("-> Critic Agent: Reviewing final report...")
+
+    report = state.get("report_markdown", "")
+    insights = state.get("insights", [])
+    revisions = state.get("critic_revisions", 0)
+
+    insights_block = "\n".join(
+        f"- [{ins['importance']}/5] {ins['title']}: {ins['description']} (Evidence: {ins['supporting_stat']})"
+        for ins in insights
+    ) or "No insights were provided."
+
+    llm = get_llm(model=AGENT_MODELS["critic"])
+    structured_llm = llm.with_structured_output(CriticVerdict)
+
+    prompt = f"""You are a skeptical senior reviewer fact-checking an automatically
+generated data report. Approve it ONLY if it is fully supported by the source
+insights below, specific (not vague filler), and free of invented numbers or claims.
+
+Source insights (the ONLY ground truth -- anything in the report not traceable
+to these should be rejected):
+{insights_block}
+
+Report to review:
+{report}
+"""
+
+    verdict = structured_llm.invoke(prompt)
+
+    status = "APPROVED" if verdict.approved else "NEEDS REVISION"
+    print(f"   [{status}] {verdict.feedback}")
+
+    return {
+        "critic_approved": verdict.approved,
+        "critic_feedback": verdict.feedback,
+        "critic_revisions": revisions + 1,
+    }
 
 
 def route_next(state: GraphState):
@@ -250,6 +499,20 @@ def route_next(state: GraphState):
     if not plan.steps:
         return "insight_agent"
     return plan.steps[0]
+
+
+def route_after_critic(state: GraphState):
+    """Conditional-edge function after the Critic Agent. Loops back to
+    Synthesis for a rewrite if the Critic rejected the draft -- unless we've
+    already hit MAX_CRITIC_REVISIONS, in which case we ship the current draft
+    anyway rather than risk looping forever on a report the Critic keeps
+    disliking for marginal reasons."""
+    if state.get("critic_approved"):
+        return END
+    if state.get("critic_revisions", 0) >= MAX_CRITIC_REVISIONS:
+        print(f"   [!] Hit max revisions ({MAX_CRITIC_REVISIONS}) -- shipping current draft as-is.")
+        return END
+    return "synthesis_agent"
 
 
 def build_graph():
@@ -267,7 +530,9 @@ def build_graph():
     builder.add_node("dimensionality_reduction", dimensionality_reduction_node)
     builder.add_node("feature_selection", feature_selection_node)
     builder.add_node("insight_agent", insight_agent_node)
+    builder.add_node("visualization_agent", visualization_agent_node)
     builder.add_node("synthesis_agent", synthesis_agent_node)
+    builder.add_node("critic_agent", critic_agent_node)
 
     builder.set_entry_point("planner")
 
@@ -279,11 +544,18 @@ def build_graph():
     for node_name in ["planner"] + VALID_STEPS:
         builder.add_conditional_edges(node_name, route_next, route_map)
 
-    # Insight Agent always flows into Synthesis. Synthesis is the last node
-    # for now -- a Visualization Agent (and optionally a Critic Agent) can be
-    # inserted into this chain later without touching anything before it.
-    builder.add_edge("insight_agent", "synthesis_agent")
-    builder.add_edge("synthesis_agent", END)
+    # Full multi-agent chain:
+    #   Insight -> Visualization -> Synthesis -> Critic
+    #                                    ^            |
+    #                                    └── reject ───┘ (up to MAX_CRITIC_REVISIONS times)
+    builder.add_edge("insight_agent", "visualization_agent")
+    builder.add_edge("visualization_agent", "synthesis_agent")
+    builder.add_edge("synthesis_agent", "critic_agent")
+    builder.add_conditional_edges(
+        "critic_agent",
+        route_after_critic,
+        {"synthesis_agent": "synthesis_agent", END: END},
+    )
 
     return builder.compile()
 
@@ -311,6 +583,19 @@ if __name__ == "__main__":
         print(f"  {ins['description']}")
         print(f"  Evidence: {ins['supporting_stat']}")
 
+    print("\n=== Charts ===")
+    charts = final_state.get("charts", [])
+    if charts:
+        for c in charts:
+            print(f"  {c['path']}: {c['title']}")
+    else:
+        print("  (none generated)")
+
+    print(f"\n=== Critic ===")
+    print(f"  Approved: {final_state.get('critic_approved')}")
+    print(f"  Revisions used: {final_state.get('critic_revisions', 0)}")
+    print(f"  Final feedback: {final_state.get('critic_feedback')}")
+
     print("\n=== Final Report ===")
     report = final_state.get("report_markdown", "")
     print(report)
@@ -318,3 +603,4 @@ if __name__ == "__main__":
     with open("report.md", "w") as f:
         f.write(report)
     print("\n[+] Report also saved to report.md")
+    print(f"[+] Charts saved under ./{CHARTS_DIR}/")
