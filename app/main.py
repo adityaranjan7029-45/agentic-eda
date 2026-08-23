@@ -1,14 +1,30 @@
-import streamlit as st
-import pandas as pd
 import os
-import time
+import sys
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+# ==========================================
+# 🔧 Make the repo root importable
+# ==========================================
+# app/main.py lives one level below the repo root. Depending on *how*
+# `streamlit run` is launched, the repo root isn't guaranteed to already be
+# on sys.path, and `from src.graph import build_graph` below would fail with
+# ModuleNotFoundError. This makes it work regardless of the working directory
+# the command was run from.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.graph import build_graph  # noqa: E402  (must come after the sys.path fix above)
 
 # ==========================================
 # ⚙️ Page Configuration
 # ==========================================
 st.set_page_config(
-    page_title="Agentic EDA", 
-    page_icon="🔥", 
+    page_title="Agentic EDA",
+    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -23,7 +39,7 @@ st.markdown("""
         0% { opacity: 0; transform: translateY(20px); }
         100% { opacity: 1; transform: translateY(0); }
     }
-    
+
     .block-container {
         animation: fadeIn 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
@@ -45,7 +61,7 @@ st.markdown("""
         font-weight: 800;
         margin-bottom: 0px;
     }
-    
+
     /* 3. Glowing, Breathing Primary Button */
     @keyframes pulseGlow {
         0% { box-shadow: 0 0 10px rgba(255, 140, 0, 0.4); }
@@ -64,13 +80,13 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 1px;
     }
-    
+
     .stButton>button:hover {
         transform: translateY(-3px) scale(1.02);
         animation: none; /* Stops the breathing while hovering */
         box-shadow: 0 8px 25px rgba(255, 140, 0, 0.8);
     }
-    
+
     /* File Uploader Hover Animation */
     [data-testid="stFileUploadDropzone"] {
         border: 2px dashed #FF8C00;
@@ -78,7 +94,7 @@ st.markdown("""
         background-color: rgba(255, 140, 0, 0.05);
         transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    
+
     [data-testid="stFileUploadDropzone"]:hover {
         background-color: rgba(255, 140, 0, 0.15);
         border-color: #FF4B4B;
@@ -88,22 +104,57 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# 🧠 Cached graph + friendly per-node status text
+# ==========================================
+# st.cache_resource means build_graph() (which compiles the whole StateGraph)
+# only runs once per server process, not on every single Streamlit rerun
+# (Streamlit reruns this entire script top-to-bottom on every interaction).
+@st.cache_resource
+def get_graph():
+    return build_graph()
+
+
+NODE_MESSAGES = {
+    "planner": "🧠 **Planner Agent:** Analyzing metadata and drafting a preprocessing plan...",
+    "data_cleaning": "🧹 **Preprocessing:** Cleaning whitespace, duplicates, and hidden nulls...",
+    "type_conversion": "🔡 **Preprocessing:** Converting column data types...",
+    "imputation": "🩹 **Preprocessing:** Filling in missing values...",
+    "outlier_handling": "📏 **Preprocessing:** Capping extreme outliers...",
+    "feature_engineering": "🛠️ **Preprocessing:** Engineering new features...",
+    "encoding": "🔢 **Preprocessing:** Encoding categorical columns...",
+    "feature_transformation": "📐 **Preprocessing:** Reshaping skewed distributions...",
+    "scaling": "⚖️ **Preprocessing:** Scaling numeric features...",
+    "dimensionality_reduction": "📉 **Preprocessing:** Reducing dimensionality (PCA)...",
+    "feature_selection": "🧬 **Preprocessing:** Dropping redundant features...",
+    "insight_agent": "🔍 **Insight Agent:** Searching the cleaned data for patterns...",
+    "visualization_agent": "📊 **Visualization Agent:** Generating charts...",
+    "synthesis_agent": "📝 **Synthesis Agent:** Writing the final report...",
+    "critic_agent": "🕵️ **Critic Agent:** Reviewing the report for accuracy...",
+}
+
+# ==========================================
 # 🗄️ Sidebar Layout
 # ==========================================
 with st.sidebar:
     st.markdown("### ⚙️ Engine Settings")
-    st.selectbox("Planner Model", ["groq/llama-3.1-70b-versatile", "groq/llama3-8b-8192"])
-    st.selectbox("Coder Model", ["openai/gpt-4o", "openai/gpt-4o-mini"])
+    st.caption("Model per agent (set in src/graph.py :: AGENT_MODELS, all served via Groq)")
+    st.text(f"Planner:        {os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}")
+    st.text("Insight:        openai/gpt-oss-120b")
+    st.text("Visualization:  openai/gpt-oss-120b")
+    st.text("Synthesis:      llama-3.1-8b-instant")
+    st.text("Critic:         openai/gpt-oss-120b")
     st.markdown("---")
     st.markdown("### 🟢 System Status")
-    st.success("API Keys Loaded")
-    st.success("LangSmith Tracing Active")
+    if os.getenv("GROQ_API_KEY"):
+        st.success("GROQ_API_KEY loaded")
+    else:
+        st.error("GROQ_API_KEY missing -- add it to your .env")
 
 # ==========================================
 # 🎨 UI Header
 # ==========================================
 st.markdown('<p class="title-text">Agentic EDA ⚡</p>', unsafe_allow_html=True)
-st.markdown("**Autonomous Data Analyst powered by LangGraph, Groq, and OpenAI.**")
+st.markdown("**Autonomous, multi-agent Data Analyst powered by LangGraph and Groq.**")
 st.markdown("---")
 
 # ==========================================
@@ -112,20 +163,17 @@ st.markdown("---")
 uploaded_file = st.file_uploader("Drop your dataset here (CSV)", type=["csv"])
 
 if uploaded_file is not None:
-    # Safely save the uploaded file to our local data/raw directory
-    raw_data_dir = os.path.join(os.path.dirname(os.getcwd()), "data", "raw")
-    if not os.path.exists(raw_data_dir): 
-        raw_data_dir = "data/raw"
-        
-    os.makedirs(raw_data_dir, exist_ok=True)
-    file_path = os.path.join(raw_data_dir, uploaded_file.name)
-    
+    # Save the uploaded file to <repo_root>/data/raw, regardless of cwd.
+    raw_data_dir = REPO_ROOT / "data" / "raw"
+    raw_data_dir.mkdir(parents=True, exist_ok=True)
+    file_path = raw_data_dir / uploaded_file.name
+
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
     # Create two columns for a cleaner layout
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         st.success(f"File `{uploaded_file.name}` uploaded securely to backend!")
         try:
@@ -134,36 +182,95 @@ if uploaded_file is not None:
                 st.dataframe(df.head(), use_container_width=True)
         except Exception as e:
             st.error(f"Could not read CSV preview: {e}")
-            
-    with col2:
-        st.info(f"**Shape:** {df.shape[0]} rows, {df.shape[1]} columns")
-        st.info(f"**Memory:** {(df.memory_usage(deep=True).sum() / 1024**2):.2f} MB")
+            df = None
 
-    # ==========================================
-    # 🚀 Execution Trigger
-    # ==========================================
-    st.markdown("---")
-    
-    # Using a container to center the button visually
-    _, center_col, _ = st.columns([1, 2, 1])
-    with center_col:
-        if st.button("🔥 Initialize Autonomous Analysis", use_container_width=True):
-            
-            with st.status("Initializing LangGraph Workflow...", expanded=True) as status:
-                st.write("🧠 **Planner Node (Groq):** Analyzing metadata and drafting strategy...")
-                time.sleep(1.5) 
-                
-                st.write("💻 **Coder Node (OpenAI):** Writing Pandas & Matplotlib scripts...")
-                time.sleep(1.5)
-                
-                st.write("⚡ **Executor Node:** Running code in secure environment...")
-                time.sleep(1.5)
-                
-                st.write("📝 **Synthesizer Node:** Formatting final markdown report...")
-                time.sleep(1)
-                
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
+    if df is not None:
+        with col2:
+            st.info(f"**Shape:** {df.shape[0]} rows, {df.shape[1]} columns")
+            st.info(f"**Memory:** {(df.memory_usage(deep=True).sum() / 1024**2):.2f} MB")
 
-            # Output Area
-            st.markdown("### 📑 Final Intelligence Report")
-            st.success("The backend graph is not connected yet. Once `src/graph.py` is built, the final markdown report and visualizations will render right here.")
+        # ==========================================
+        # 🚀 Execution Trigger
+        # ==========================================
+        st.markdown("---")
+
+        # Using a container to center the button visually
+        _, center_col, _ = st.columns([1, 2, 1])
+        with center_col:
+            run_clicked = st.button("🔥 Initialize Autonomous Analysis", use_container_width=True)
+
+        if run_clicked:
+            if not os.getenv("GROQ_API_KEY"):
+                st.error("GROQ_API_KEY is not set. Add it to your .env file before running the pipeline.")
+            else:
+                graph = get_graph()
+                initial_state = {"df": df}
+                final_state = dict(initial_state)
+                pipeline_error = None
+
+                with st.status("Running Agentic EDA pipeline...", expanded=True) as status:
+                    try:
+                        # graph.stream() yields one dict per node as it finishes,
+                        # e.g. {"planner": {"plan": ..., "steps_taken": [...]}} --
+                        # this is what lets the UI show REAL progress instead of
+                        # a fixed sequence of sleeps that always looks the same
+                        # regardless of what the pipeline actually did.
+                        for step_output in graph.stream(initial_state):
+                            for node_name, node_result in step_output.items():
+                                final_state.update(node_result)
+                                st.write(NODE_MESSAGES.get(node_name, f"➡️ **{node_name}** finished."))
+
+                        status.update(label="Analysis Complete!", state="complete", expanded=False)
+                    except Exception as e:
+                        pipeline_error = e
+                        status.update(label="Pipeline failed", state="error", expanded=True)
+                        st.write(f"❌ {type(e).__name__}: {e}")
+
+                if pipeline_error is not None:
+                    st.error(
+                        "The pipeline hit an error and couldn't finish. "
+                        "See the failure details above. Common causes: an invalid/rate-limited "
+                        "Groq API key, or a CSV shape the preprocessing steps didn't expect."
+                    )
+                else:
+                    # ==========================================
+                    # 📑 Results
+                    # ==========================================
+                    report_md = final_state.get("report_markdown", "")
+                    charts = final_state.get("charts", [])
+                    critic_approved = final_state.get("critic_approved")
+                    critic_feedback = final_state.get("critic_feedback")
+
+                    st.markdown("### 📑 Final Intelligence Report")
+
+                    if critic_approved is True:
+                        st.success(f"✅ Critic approved this report. {critic_feedback or ''}")
+                    elif critic_approved is False:
+                        st.warning(
+                            f"⚠️ Shipped after the maximum revision attempts -- Critic's last "
+                            f"feedback: {critic_feedback or '(none)'}"
+                        )
+
+                    if report_md:
+                        st.markdown(report_md)
+                        st.download_button(
+                            "⬇️ Download Report (.md)",
+                            data=report_md,
+                            file_name="report.md",
+                            mime="text/markdown",
+                        )
+                    else:
+                        st.warning("No report was generated.")
+
+                    if charts:
+                        st.markdown("### 📊 Charts")
+                        chart_cols = st.columns(2)
+                        for i, chart in enumerate(charts):
+                            with chart_cols[i % 2]:
+                                st.image(chart["path"], caption=chart["title"], use_container_width=True)
+
+                    with st.expander("🔬 Final cleaned dataset (preview)", expanded=False):
+                        final_df = final_state.get("df")
+                        if final_df is not None:
+                            st.dataframe(final_df.head(20), use_container_width=True)
+                            st.caption(f"Final shape: {final_df.shape[0]} rows, {final_df.shape[1]} columns")
