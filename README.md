@@ -28,10 +28,16 @@ Preprocessing nodes (deterministic pandas/sklearn)
 Insight Agent (LLM)
       │
       ▼
-Synthesis Agent (LLM)
+Visualization Agent (LLM + sandboxed code execution)
       │
       ▼
-   Final Report (Markdown)
+Synthesis Agent (LLM) ◄─────────────┐
+      │                              │ rejected (up to 2x)
+      ▼                              │
+Critic Agent (LLM) ──────────────────┘
+      │ approved
+      ▼
+   Final Report (Markdown) + Charts (PNG)
 ```
 
 1. **Planner Agent** (`src/graph.py :: planner_node`) — profiles the raw dataset (dtypes, nulls, sample rows) and returns a `PreprocessingPlan`: an ordered list of steps, drawn only from a fixed vocabulary (`data_cleaning`, `type_conversion`, `imputation`, `outlier_handling`, `feature_engineering`, `encoding`, `feature_transformation`, `scaling`, `dimensionality_reduction`, `feature_selection`), plus its reasoning for choosing them. It only includes steps the data actually justifies — e.g. it skips `imputation` if there are no nulls.
@@ -40,19 +46,23 @@ Synthesis Agent (LLM)
 
 3. **Insight Agent** (`src/graph.py :: insight_agent_node`) — once preprocessing is done, this reads a statistical summary of the *cleaned* data (describe(), top correlations, top category values) and returns 3–7 ranked `Insight` objects, each with a title, plain-language description, a concrete supporting statistic, and an importance score (1–5). It's explicitly told not to invent numbers that aren't in the summary it was given.
 
-4. **Synthesis Agent** (`src/graph.py :: synthesis_agent_node`) — takes the Insight Agent's findings plus a record of which preprocessing steps ran, and writes them up as one Markdown report (Overview, Data Preparation Summary, Key Findings, Recommended Next Steps) aimed at a non-technical reader. Unlike the other two agents, this one is *not* forced into a rigid schema — the desired output is flowing prose, so it's a plain LLM call rather than `with_structured_output`.
+4. **Visualization Agent** (`src/graph.py :: visualization_agent_node`) — the one place in the pipeline where an LLM's own code actually runs. It proposes 2–5 charts grounded in the Insight Agent's findings and writes matplotlib/seaborn code for each, executed through a locked-down `exec()` sandbox (`execute_chart_code`): only `df`/`plt`/`sns`/`pd`/`np`/`save_path` are reachable, `__import__` is stripped from the available builtins so no `import` statement can ever succeed, and a `SIGALRM`-based timeout kills runaway code. If a chart's code throws, the real traceback is sent back to the LLM to fix — up to 2 attempts — before that one chart is skipped. This is the self-healing loop from the original concept, deliberately scoped to just chart code rather than the whole pipeline, so a failure can never corrupt the dataframe.
 
-### Roadmap (not yet built)
+5. **Synthesis Agent** (`src/graph.py :: synthesis_agent_node`) — takes the Insight Agent's findings, the generated charts, and a record of which preprocessing steps ran, and writes them up as one Markdown report (Overview, Data Preparation Summary, Key Findings, Recommended Next Steps) aimed at a non-technical reader. Unlike the schema-bound agents, this one is a plain LLM call rather than `with_structured_output` — the desired output is flowing prose, and forcing it into fixed fields would just mean reassembling Markdown afterwards. On a revision (see below), it also receives the Critic's exact feedback and is told to address it directly.
 
-- **Visualization Agent** — would decide which charts best support the findings and generate matplotlib/seaborn code for them. This is the one place LLM-written code would actually run, so it needs a proper sandboxed executor first — held back until the rest of the pipeline is solid.
-- **Critic Agent** — would review the plan or the report before it ships and could send work back for revision, giving a genuine reflection/self-healing loop at the reasoning level rather than by patching stack traces.
+6. **Critic Agent** (`src/graph.py :: critic_agent_node`) — reads the finished report back against the Insight Agent's findings (the only source of truth) and returns a `CriticVerdict`: approved or not, with specific feedback either way. A rejection routes back to the Synthesis Agent for a rewrite, capped at 2 revisions (`MAX_CRITIC_REVISIONS`) so a report the Critic keeps disliking for marginal reasons still ships rather than looping forever. This is the pipeline's genuine reflection loop — it catches a *reasoning* failure (an invented number, vague filler) rather than a code traceback.
+
+### Not yet done
+
+- **Streamlit wiring** — `app/main.py`'s "Initialize Autonomous Analysis" button still simulates progress with `time.sleep()` calls rather than calling `build_graph().invoke(...)`. The LangGraph pipeline above is fully built and runnable standalone (`python -m src.graph`), just not yet connected to the UI.
 
 ## 🛠️ Tech Stack
 
 * **Orchestration:** LangGraph, LangChain (`v0.3`)
 * **LLMs:** Open-source models (Llama 3.x, GPT-OSS) served via **Groq's free API tier** — `src/config.py` also supports switching to Hugging Face's inference router or OpenAI via the `LLM_PROVIDER` env var, but Groq is the default.
-* **Structured Output:** Pydantic schemas (`PreprocessingPlan`, `Insight`/`InsightReport` in `src/schemas.py`) force every planning/analysis response into validated, parseable data instead of free text.
+* **Structured Output:** Pydantic schemas in `src/schemas.py` (`PreprocessingPlan`, `Insight`/`InsightReport`, `ChartSpec`/`VisualizationPlan`, `CriticVerdict`) force every planning/analysis/review response into validated, parseable data instead of free text.
 * **Data Science Core:** Pandas, Scikit-learn (PowerTransformer, StandardScaler, PCA)
+* **Visualization:** Matplotlib, Seaborn — run only through the sandboxed executor described above, never directly.
 * **UI:** Streamlit (`app/main.py`) — currently a standalone shell; not yet wired to the LangGraph pipeline above.
 
 ## ⚙️ Setup
@@ -63,8 +73,8 @@ Synthesis Agent (LLM)
    LLM_PROVIDER=groq
    GROQ_API_KEY=your_key_here
    ```
-3. Run the pipeline standalone on any CSV:
+3. Run the full pipeline on any CSV:
    ```
    python -m src.graph path/to/your.csv
    ```
-   This prints the Planner's chosen steps, runs preprocessing, prints the Insight Agent's findings, and writes the final report to `report.md`.
+   This prints the Planner's chosen steps, runs preprocessing, prints the Insight Agent's findings, generates charts under `./charts/`, prints the Critic's verdict, and writes the final report to `report.md`.
