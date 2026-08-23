@@ -108,11 +108,16 @@ class PreprocessingPlan(BaseModel):
 
 class GraphState(TypedDict, total=False):
         df: pd.DataFrame
-        plan:PreprocessingPlan
+        plan: PreprocessingPlan
         target_col: str
-        insights: list
+        insights: list  # list[dict], each shaped like schemas.Insight
         steps_taken: list  # frozen copy of plan.steps at planning time (plan.steps itself gets emptied by .pop(0) as nodes run)
         report_markdown: str  # final report text produced by the Synthesis Agent
+        charts: list  # list[dict]: {"title", "rationale", "path"} for each successfully generated chart
+        critic_approved: bool  # set by the Critic Agent after reviewing report_markdown
+        critic_feedback: str  # Critic Agent's feedback -- fed back into Synthesis on a revision
+        critic_revisions: int  # how many times the Critic has reviewed a draft, so the graph can stop looping
+
 
     
 def data_cleaning_node(state:GraphState):
@@ -184,7 +189,7 @@ def type_conversion_node(state: GraphState):
         '1': True, '0':False
     }
 
-    obj_cols=df.select_dtypes(incluse=['object', 'string']).columns
+    obj_cols=df.select_dtypes(include=['object', 'string']).columns
     for col in obj_cols:
         #Drop NaNs temporarily just to check the unique values
         unique_vals=df[col].dropna().unique()
@@ -255,7 +260,7 @@ def imputation_node(state: GraphState):
                 df.drop(columns=[col],inplace=True)
 
             #3. Numeric Imputation (Mean/Median)
-            elif pd.api.types.is_numeric_dtupe(df[col]):
+            elif pd.api.types.is_numeric_dtype(df[col]):
 
                 median_val = df[col].median()
                 df[col] = df[col].fillna(median_val)
@@ -502,7 +507,7 @@ def dimensionality_reduction_node(state: GraphState):
         target_data = df.pop(target_col)
         print(f"   [!] Isolated target column '{target_col}' from compression.")
     
-    #2. Dynamic threshold 
+    #2. Dynamic threshold
     # Only compress if we still have too many feature columns.
     if len(df.columns)>15:
         original_cols = len(df.columns)
@@ -522,15 +527,18 @@ def dimensionality_reduction_node(state: GraphState):
     else:
         print(f"   [+] Skipped PCA. Feature space is already lean ({len(df.columns)} columns).")
 
-        # 5. Glue the target variable back onto the dataframe
-        if target_data is not None:
-            df.reset_index(drop=True , inplace=True)
-            target_data.reset_index(drop=True, inplace=True)
-            df[target_col] = target_data
+    # 5. Glue the target variable back onto the dataframe
+    # (Moved out of the else-block: this must run whether or not PCA fired,
+    # otherwise the function falls through with no return when PCA does run.)
+    if target_data is not None:
+        df.reset_index(drop=True , inplace=True)
+        target_data.reset_index(drop=True, inplace=True)
+        df[target_col] = target_data
 
-        # 6.Update State
-        completed_step = plan.steps.pop(0)
-        return {"df": df, "plan": plan}
+    # 6. Update State
+    completed_step = plan.steps.pop(0)
+    print(f"   [+] Completed: {completed_step}. Feature set ready (Shape: {df.shape}).")
+    return {"df": df, "plan": plan}
 
 
 def feature_selection_node(state:GraphState):
@@ -589,10 +597,3 @@ def feature_selection_node(state:GraphState):
         print(f"   [+] Final matrix shape ready for ML: {df.shape}")
     
     return {"df": df, "plan": plan}
-
-    
-
-
-        
-    
-
