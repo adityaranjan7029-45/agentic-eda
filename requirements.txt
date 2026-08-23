@@ -5,7 +5,7 @@ langchain-openai
 langchain-groq
 langgraph
 langsmith
-
+groq
 # Environment Variables
 python-dotenv
 

@@ -16,6 +16,8 @@ import io
 import os
 import re
 import signal
+import time
+from groq import RateLimitError
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend -- we only ever save figures, never display them
 import matplotlib.pyplot as plt
@@ -40,15 +42,27 @@ from src.nodes import (
     dimensionality_reduction_node,
     feature_selection_node,
 )
-# pyrefly: ignore [missing-import]
 from src.schemas import InsightReport, VisualizationPlan, CriticVerdict
 
 # Which Groq model each agent uses. Kept as one dict so model choices are
 # visible/tunable in one place instead of scattered through node functions.
+#
+# NOTE: llama-3.3-70b-versatile and llama-3.1-8b-instant were both shut down
+# by Groq on 2026-08-16 -- openai/gpt-oss-120b and openai/gpt-oss-20b are
+# Groq's recommended replacements (console.groq.com/docs/deprecations).
+#
+# Both models have IDENTICAL free-tier limits (8K tokens/minute each) --
+# but they're tracked as SEPARATE per-model buckets. A full pipeline run
+# makes 5+ LLM calls back to back (more if a chart needs fixing or the
+# Critic rejects a draft), which can exceed a single model's 8K TPM bucket.
+# Splitting the lighter-weight agents (Planner, Synthesis) onto gpt-oss-20b
+# means they draw from a separate budget than the heavier reasoning agents
+# (Insight, Visualization, Critic) on gpt-oss-120b -- roughly doubling the
+# total headroom available to one run.
 AGENT_MODELS = {
-    "planner": None,  # None = fall back to GROQ_MODEL in .env (default llama-3.3-70b-versatile)
+    "planner": "openai/gpt-oss-20b",
     "insight": "openai/gpt-oss-120b",
-    "synthesis": "llama-3.1-8b-instant",  # fast/cheap model -- this is a writing/formatting task, not deep reasoning
+    "synthesis": "openai/gpt-oss-20b",
     "visualization": "openai/gpt-oss-120b",
     "critic": "openai/gpt-oss-120b",
 }
@@ -56,6 +70,36 @@ AGENT_MODELS = {
 CHARTS_DIR = "charts"
 MAX_CHART_FIX_ATTEMPTS = 2  # how many times we let the LLM try to fix its own broken chart code
 MAX_CRITIC_REVISIONS = 2  # how many times the Critic can send the report back before we ship it anyway
+
+# Retry settings for Groq rate limits specifically. ChatGroq already retries
+# transient errors twice by default (max_retries=2 on the client), but those
+# retries fire almost immediately -- fine for a network blip, not enough for
+# a genuine tokens-per-minute shortfall, which needs real seconds to clear
+# from Groq's rolling 60s window. This adds a second, slower retry layer
+# specifically for RateLimitError (HTTP 429).
+RATE_LIMIT_MAX_ATTEMPTS = 4
+RATE_LIMIT_BASE_WAIT_SECONDS = 15  # attempt 1 waits 15s, attempt 2 waits 30s, attempt 3 waits 45s...
+
+
+def invoke_with_retry(runnable, prompt):
+    """Wraps a .invoke() call (on either a plain LLM or a
+    with_structured_output-wrapped one) with a real wait-and-retry loop for
+    Groq's RateLimitError. Every direct LLM call in this file goes through
+    this instead of calling .invoke() directly."""
+    last_error = None
+    for attempt in range(RATE_LIMIT_MAX_ATTEMPTS):
+        try:
+            return runnable.invoke(prompt)
+        except RateLimitError as e:
+            last_error = e
+            if attempt == RATE_LIMIT_MAX_ATTEMPTS - 1:
+                break
+            wait = RATE_LIMIT_BASE_WAIT_SECONDS * (attempt + 1)
+            print(f"   [!] Rate limited -- waiting {wait}s before retry ({attempt + 1}/{RATE_LIMIT_MAX_ATTEMPTS})...")
+            time.sleep(wait)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("invoke_with_retry failed: no attempts were made.")
 
 # Must exactly match the step names described in PreprocessingPlan (src/nodes.py)
 # and the node names registered in build_graph() below.
@@ -99,7 +143,7 @@ def planner_node(state: GraphState):
     df = state["df"]
     profile = build_profile(df)
 
-    llm = get_llm()
+    llm = get_llm(model=AGENT_MODELS["planner"])
     structured_llm = llm.with_structured_output(PreprocessingPlan)
 
     prompt = f"""You are a senior data scientist planning an EDA/preprocessing pipeline
@@ -116,7 +160,7 @@ Dataset profile:
 {profile}
 """
 
-    plan = structured_llm.invoke(prompt)
+    plan = invoke_with_retry(structured_llm, prompt)
 
     # Safety net: silently drop any step name the LLM invents that isn't in
     # our fixed vocabulary, so a hallucinated step can't crash the router.
@@ -198,7 +242,7 @@ Context:
 {context}
 """
 
-    report = structured_llm.invoke(prompt)
+    report = invoke_with_retry(structured_llm, prompt)
 
     # Sort strongest-first and store as plain dicts (Pydantic objects don't
     # need to survive in LangGraph state -- dicts are simpler to serialize
@@ -275,7 +319,7 @@ Write a well-organized Markdown report with these sections:
 Do not invent any numbers, columns, or findings that aren't given above.{revision_block}
 """
 
-    response = llm.invoke(prompt)
+    response = invoke_with_retry(llm, prompt)
     report_markdown = response.content
 
     print("   [+] Report generated.")
@@ -394,7 +438,7 @@ End every chart's code with exactly:
     plt.close()
 """
 
-    plan = structured_llm.invoke(prompt)
+    plan = invoke_with_retry(structured_llm, prompt)
 
     generated_charts = []
 
@@ -433,7 +477,7 @@ Code:
 Rewrite ONLY the code to fix the error. Same rules as before: only use
 df/plt/sns/pd/np/save_path, no imports, must end with plt.tight_layout(),
 plt.savefig(save_path), plt.close(). Return ONLY the corrected Python code."""
-                    fixed = fix_llm.invoke(fix_prompt)
+                    fixed = invoke_with_retry(fix_llm, fix_prompt)
                     code = _strip_code_fences(fixed.content)
 
         if last_error is not None:
@@ -477,7 +521,7 @@ Report to review:
 {report}
 """
 
-    verdict = structured_llm.invoke(prompt)
+    verdict = invoke_with_retry(structured_llm, prompt)
 
     status = "APPROVED" if verdict.approved else "NEEDS REVISION"
     print(f"   [{status}] {verdict.feedback}")

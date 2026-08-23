@@ -43,7 +43,7 @@ def get_llm(model: str = None):
         from langchain_groq import ChatGroq
 
         api_key = os.getenv("GROQ_API_KEY")
-        resolved_model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        resolved_model = model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
         if not api_key:
             raise ValueError("GROQ_API_KEY not found in .env (get a free key at console.groq.com)")
