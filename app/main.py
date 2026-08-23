@@ -179,7 +179,7 @@ if uploaded_file is not None:
         try:
             df = pd.read_csv(file_path)
             with st.expander("👀 Preview Raw Data", expanded=False):
-                st.dataframe(df.head(), use_container_width=True)
+                st.dataframe(df.head(), width="stretch")
         except Exception as e:
             st.error(f"Could not read CSV preview: {e}")
             df = None
@@ -197,7 +197,7 @@ if uploaded_file is not None:
         # Using a container to center the button visually
         _, center_col, _ = st.columns([1, 2, 1])
         with center_col:
-            run_clicked = st.button("🔥 Initialize Autonomous Analysis", use_container_width=True)
+            run_clicked = st.button("🔥 Initialize Autonomous Analysis", width="stretch")
 
         if run_clicked:
             if not os.getenv("GROQ_API_KEY"):
@@ -267,10 +267,10 @@ if uploaded_file is not None:
                         chart_cols = st.columns(2)
                         for i, chart in enumerate(charts):
                             with chart_cols[i % 2]:
-                                st.image(chart["path"], caption=chart["title"], use_container_width=True)
+                                st.image(chart["path"], caption=chart["title"], width="stretch")
 
                     with st.expander("🔬 Final cleaned dataset (preview)", expanded=False):
                         final_df = final_state.get("df")
                         if final_df is not None:
-                            st.dataframe(final_df.head(20), use_container_width=True)
+                            st.dataframe(final_df.head(20), width="stretch")
                             st.caption(f"Final shape: {final_df.shape[0]} rows, {final_df.shape[1]} columns")
