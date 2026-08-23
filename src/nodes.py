@@ -106,12 +106,13 @@ class PreprocessingPlan(BaseModel):
 
     #Defining the memory of my langgraph.
 
-class GraphState(TypedDict):
+class GraphState(TypedDict, total=False):
         df: pd.DataFrame
         plan:PreprocessingPlan
         target_col: str
         insights: list
-        
+        steps_taken: list  # frozen copy of plan.steps at planning time (plan.steps itself gets emptied by .pop(0) as nodes run)
+        report_markdown: str  # final report text produced by the Synthesis Agent
 
     
 def data_cleaning_node(state:GraphState):
