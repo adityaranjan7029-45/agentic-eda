@@ -138,10 +138,10 @@ NODE_MESSAGES = {
 with st.sidebar:
     st.markdown("### ⚙️ Engine Settings")
     st.caption("Model per agent (set in src/graph.py :: AGENT_MODELS, all served via Groq)")
-    st.text(f"Planner:        {os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}")
+    st.text("Planner:        openai/gpt-oss-20b")
     st.text("Insight:        openai/gpt-oss-120b")
     st.text("Visualization:  openai/gpt-oss-120b")
-    st.text("Synthesis:      llama-3.1-8b-instant")
+    st.text("Synthesis:      openai/gpt-oss-20b")
     st.text("Critic:         openai/gpt-oss-120b")
     st.markdown("---")
     st.markdown("### 🟢 System Status")
@@ -190,9 +190,29 @@ if uploaded_file is not None:
             st.info(f"**Memory:** {(df.memory_usage(deep=True).sum() / 1024**2):.2f} MB")
 
         # ==========================================
+        # 🎯 Target Column Selection
+        # ==========================================
+        # Optional. Picking a column here (e.g. "Churn") tells the Insight
+        # Agent to focus specifically on what drives it, instead of it getting
+        # buried under coincidental correlations among the pipeline's
+        # automatically engineered features. Leaving this blank runs the
+        # pipeline in general profiling mode -- also fine, just less focused.
+        st.markdown("---")
+        NO_TARGET_OPTION = "(none -- general profiling)"
+        target_choice = st.selectbox(
+            "🎯 Select Target Column (optional)",
+            [NO_TARGET_OPTION] + list(df.columns),
+            help=(
+                "The column you're trying to predict or explain (e.g. 'Churn', 'Price'). "
+                "The Insight Agent will focus on what drives it. Leave as "
+                f"'{NO_TARGET_OPTION}' for general findings about the dataset instead."
+            ),
+        )
+        selected_target_col = target_choice if target_choice != NO_TARGET_OPTION else None
+
+        # ==========================================
         # 🚀 Execution Trigger
         # ==========================================
-        st.markdown("---")
 
         # Using a container to center the button visually
         _, center_col, _ = st.columns([1, 2, 1])
@@ -205,6 +225,10 @@ if uploaded_file is not None:
             else:
                 graph = get_graph()
                 initial_state = {"df": df}
+                if selected_target_col:
+                    initial_state["target_col"] = selected_target_col
+                # else: leave target_col unset -- planner_node treats that as
+                # "no target", general profiling mode.
                 final_state = dict(initial_state)
                 pipeline_error = None
 
@@ -240,6 +264,12 @@ if uploaded_file is not None:
                     charts = final_state.get("charts", [])
                     critic_approved = final_state.get("critic_approved")
                     critic_feedback = final_state.get("critic_feedback")
+
+                    resolved_target = final_state.get("target_col")
+                    if resolved_target:
+                        st.caption(f"🎯 Analysis focused on target column: **{resolved_target}**")
+                    else:
+                        st.caption("🎯 No target column identified -- general profiling mode.")
 
                     st.markdown("### 📑 Final Intelligence Report")
 

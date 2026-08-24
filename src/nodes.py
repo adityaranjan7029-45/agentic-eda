@@ -100,7 +100,7 @@ class PreprocessingPlan(BaseModel):
     )
     reasoning: str=Field(
         description=""" Detailed Chain-of-Thought reasoning for the preprocessing steps.
-        Explain exactly WHY each step was chosen, referencing specific columns and data patterns seen in the profile. 
+        Explain exactly WHY each step was chosen, referencing specific columns and data patterns seen in the profile.
         Explain the logical ORDER of operations (e.g., 'We must handle outliers before scaling', or 'We must convert types before extracting date features')."""
     )
 
@@ -109,9 +109,10 @@ class PreprocessingPlan(BaseModel):
 class GraphState(TypedDict, total=False):
         df: pd.DataFrame
         plan: PreprocessingPlan
-        target_col: str
+        target_col: str  # target column name (raw casing), set from the Streamlit dropdown -- None if the user left it unselected. Resolved/normalized by planner_node.
         insights: list  # list[dict], each shaped like schemas.Insight
         steps_taken: list  # frozen copy of plan.steps at planning time (plan.steps itself gets emptied by .pop(0) as nodes run)
+        engineered_columns: list  # column names feature_engineering_node added -- lets build_insight_context() exclude them from general (no-target) profiling
         report_markdown: str  # final report text produced by the Synthesis Agent
         charts: list  # list[dict]: {"title", "rationale", "path"} for each successfully generated chart
         critic_approved: bool  # set by the Critic Agent after reviewing report_markdown
@@ -120,6 +121,49 @@ class GraphState(TypedDict, total=False):
 
 
     
+def is_id_like_column(df: pd.DataFrame, col: str) -> bool:
+    """Heuristic for 'this column identifies a row/entity, not a feature to
+    learn from' -- e.g. 'customerid', 'customer_id', 'id', 'order_id'.
+
+    Requires BOTH signals to reduce false positives:
+      1. The column's normalized name (already lowercase_snake_case by the
+         time this runs, via normalize_column_name) contains 'id' as a
+         substring.
+      2. The column is (near-)unique per row.
+
+    Name-alone would misfire on columns like 'valid_email' or 'paid_amount'
+    (both contain 'id'). Uniqueness-alone would misfire on genuinely
+    continuous features (e.g. precise purchase amounts) that happen to be
+    mostly-unique but are still useful to scale/encode normally. Requiring
+    both means a column has to look like an identifier by name AND behave
+    like one before encoding_node/scaling_node/feature_engineering_node
+    leave it alone instead of treating it as an ordinary feature.
+    """
+    name = str(col).lower()
+    if "id" not in name:
+        return False
+    n = len(df)
+    if n == 0:
+        return False
+    uniqueness_ratio = df[col].nunique(dropna=False) / n
+    return uniqueness_ratio >= 0.9
+
+
+def normalize_column_name(col_name) -> str:
+    """Converts a raw column name (e.g. "First Name!", "Churn") into the same
+    lowercase_snake_case form data_cleaning_node renames every column to
+    (e.g. "first_name", "churn"). Pulled out to module level (rather than
+    left as a nested function inside data_cleaning_node, where it used to
+    live) so anything that needs to resolve a column name against the
+    CLEANED dataframe -- like matching a target column the Planner guessed
+    on the RAW dataframe -- can reuse the exact same logic instead of
+    silently drifting out of sync with it."""
+    col = str(col_name).lower().strip()
+    col = re.sub(r'[^a-z0-9_]+', '_', col)  # Replace non-alphanumerics with '_'
+    col = re.sub(r'_+', '_', col)           # Collapse repeated underscores
+    return col.strip('_')                   # Strip leading/trailing underscores
+
+
 def data_cleaning_node(state:GraphState):
         print("-> Executing Data Cleaning...")
         df = state["df"].copy()
@@ -132,13 +176,7 @@ def data_cleaning_node(state:GraphState):
         
         # 2. Standardize Column Names
         # Converts "First Name!" to "first_name". Prevents key errors later.
-        def clean_col_name(col_name):
-            col = str(col_name).lower().strip()
-            col = re.sub(r'[^a-z0-9_]+', '_', col) # Replace non-alphanumerics with '_'
-            col = re.sub(r'_+', '_', col)          # Remove double underscores
-            return col.strip('_')                  # Strip leading/trailing underscores
-        
-        df.rename(columns=lambda x: clean_col_name(x), inplace=True)
+        df.rename(columns=lambda x: normalize_column_name(x), inplace=True)
         
         # 3. Drop exact duplicate rows
         # Retaining identical observations biases model training.
@@ -147,9 +185,19 @@ def data_cleaning_node(state:GraphState):
         # 4. Standardize Object/String Columns & Expose Hidden Nulls
         obj_cols = df.select_dtypes(include=['object', 'string']).columns
         
-        # List of common junk values that are actually missing data
-        hidden_nulls = ["", " ", "null", "none", "n/a", "na", "?", "-", "undefined", "unknown"]
-        
+        # List of common junk values that are actually missing data.
+        # Includes "nan" and "nat" -- NOT redundant with "na"/"none" below.
+        # Step A converts every value to a string BEFORE this list is
+        # applied, and Python's str(np.nan) is literally "nan" (str(pd.NaT)
+        # is "nat") -- so a genuine missing value silently turns into the
+        # *string* "nan" here, which then sails past this filter, past
+        # imputation_node (which only looks for real np.nan via isnull()),
+        # and all the way to encoding_node, which one-hot encodes it as if
+        # it were a real category (e.g. producing a bogus 'gender_nan'
+        # dummy column) instead of getting imputed like every other missing
+        # value.
+        hidden_nulls = ["", " ", "null", "none", "n/a", "na", "nan", "nat", "?", "-", "undefined", "unknown"]
+
         for col in obj_cols:
             # A. Convert to string to avoid errors with mixed types
             # B. Strip leading/trailing whitespace
@@ -309,10 +357,11 @@ def outlier_handling_node(state: GraphState):
             
 def feature_engineering_node(state: GraphState):
     print("-> Executing Universal Feature Engineering...")
-    
+
     df = state["df"].copy()
     plan = state["plan"]
-    
+    cols_before = set(df.columns)  # snapshot so we know exactly which columns THIS node adds
+
     # ---------------------------------------------------------
     # 1. TEMPORAL & TEXT FEATURES (From previous step)
     # ---------------------------------------------------------
@@ -325,6 +374,8 @@ def feature_engineering_node(state: GraphState):
         
     obj_cols = df.select_dtypes(include=['object', 'string']).columns
     for col in obj_cols:
+        if is_id_like_column(df, col):
+            continue  # an ID's char/word count is noise, not a feature
         if df[col].nunique() > 50:
             df[f"{col}_char_count"] = df[col].astype(str).str.len()
             df[f"{col}_word_count"] = df[col].astype(str).apply(lambda x: len(x.split()))
@@ -333,8 +384,15 @@ def feature_engineering_node(state: GraphState):
     # 2. AUTOMATED BINNING (Discretization)
     # Turns continuous numbers into categories to capture non-linear patterns.
     # ---------------------------------------------------------
-    num_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
-    
+    # Exclude ID-like columns (e.g. a numeric 'customerid') up front -- they
+    # have many unique values by definition, which would otherwise make them
+    # look like the perfect candidate for binning/ratio interactions below,
+    # even though a ratio like 'customerid_div_income' is meaningless.
+    num_cols = [
+        c for c in df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
+        if not is_id_like_column(df, c)
+    ]
+
     for col in num_cols:
         # Only bin columns that actually have a wide spread of unique values
         if df[col].nunique() > 20:
@@ -367,8 +425,15 @@ def feature_engineering_node(state: GraphState):
     # ---------------------------------------------------------
     completed_step = plan.steps.pop(0)
     print(f"   [+] Completed: {completed_step}. Dataset expanded from {len(state['df'].columns)} to {len(df.columns)} columns.")
-    
-    return {"df": df, "plan": plan}
+
+    # Record exactly which columns this node added (anything new relative to
+    # cols_before) -- this is how build_insight_context() later knows which
+    # columns are "original" vs "auto-generated" when there's no target
+    # column to focus on instead.
+    new_cols = [c for c in df.columns if c not in cols_before]
+    engineered_so_far = state.get("engineered_columns", [])
+
+    return {"df": df, "plan": plan, "engineered_columns": engineered_so_far + new_cols}
 
 def encoding_node(state: GraphState):
     print("-> Executing Categorical Encoding...")
@@ -382,8 +447,18 @@ def encoding_node(state: GraphState):
     categorical_cols = df.select_dtypes(include=['object', 'string', 'category']).columns
     
     for col in categorical_cols:
+        # ID-like columns (e.g. 'customerid') are entity identifiers, not
+        # features -- one-hot exploding them or factorize-ing them into an
+        # arbitrary integer just destroys the label AND hands scaling_node
+        # a fake "continuous" column to normalize into meaningless noise.
+        # Leave them exactly as-is so the row can still be traced back to
+        # its original customer/order/etc. after preprocessing.
+        if is_id_like_column(df, col):
+            print(f"   [+] Skipped encoding for ID-like column '{col}' (kept as-is)")
+            continue
+
         num_unique = df[col].nunique()
-        
+
         # 3. LOW CARDINALITY: One-Hot Encoding
         # If there are fewer than 15 unique categories (e.g., 'Color': Red, Blue, Green)
         if num_unique < 15:
@@ -473,8 +548,14 @@ def scaling_node(state: GraphState):
         # A true continuous feature (like Age or Salary) will have many unique values.
         # If a column has 2 unique values (e.g., 0 and 1), it is an encoded category.
         # We leave the 0s and 1s completely alone.
+        #
+        # We also leave ID-like columns alone even though they DO have many
+        # unique values -- a numeric customer/order ID that skipped
+        # encoding_node (e.g. it was already an int, not text) would
+        # otherwise look exactly like a "continuous feature" here and get
+        # z-score normalized into an unrecoverable, meaningless decimal.
 
-        if df[col].nunique() > 2:
+        if df[col].nunique() > 2 and not is_id_like_column(df, col):
             cols_to_scale.append(col)
     
     # 3. Apply Standard Scaling (Z-score Normalization)
@@ -506,7 +587,16 @@ def dimensionality_reduction_node(state: GraphState):
     if target_col and target_col in df.columns:
         target_data = df.pop(target_col)
         print(f"   [!] Isolated target column '{target_col}' from compression.")
-    
+
+    # 1b. Isolate any remaining non-numeric columns -- e.g. an ID-like column
+    # such as 'customerid' that encoding_node deliberately left untouched.
+    # PCA requires an all-numeric matrix; handing it a string column raises
+    # "could not convert string to float" instead of skipping it gracefully.
+    non_numeric_df = df.select_dtypes(exclude=['number'])
+    if not non_numeric_df.empty:
+        df = df.drop(columns=non_numeric_df.columns)
+        print(f"   [!] Isolated non-numeric column(s) from compression: {list(non_numeric_df.columns)}")
+
     #2. Dynamic threshold
     # Only compress if we still have too many feature columns.
     if len(df.columns)>15:
@@ -527,13 +617,19 @@ def dimensionality_reduction_node(state: GraphState):
     else:
         print(f"   [+] Skipped PCA. Feature space is already lean ({len(df.columns)} columns).")
 
-    # 5. Glue the target variable back onto the dataframe
+    # 5. Glue the target variable and any isolated non-numeric columns back
+    # onto the dataframe.
     # (Moved out of the else-block: this must run whether or not PCA fired,
     # otherwise the function falls through with no return when PCA does run.)
-    if target_data is not None:
-        df.reset_index(drop=True , inplace=True)
-        target_data.reset_index(drop=True, inplace=True)
-        df[target_col] = target_data
+    if target_data is not None or not non_numeric_df.empty:
+        df.reset_index(drop=True, inplace=True)
+        if not non_numeric_df.empty:
+            non_numeric_df = non_numeric_df.reset_index(drop=True)
+            for c in non_numeric_df.columns:
+                df[c] = non_numeric_df[c]
+        if target_data is not None:
+            target_data.reset_index(drop=True, inplace=True)
+            df[target_col] = target_data
 
     # 6. Update State
     completed_step = plan.steps.pop(0)
@@ -564,9 +660,13 @@ def feature_selection_node(state:GraphState):
     #3. Drop Highly Correlated Features ((Multicollinearity Filter)
     # We only run this if PCA was skipped (if PCA ran, columns will start with 'PC_)
     if not any(col.startswith('PC_') for col in df.columns):
-        
-        # Calculate the absolute correlation matrix
-        corr_matrix = df.corr().abs()
+
+        # Calculate the absolute correlation matrix. numeric_only=True is
+        # required here (not just a nicety) -- a leftover non-numeric column
+        # like an ID that encoding_node deliberately left untouched would
+        # otherwise make .corr() raise instead of just being ignored, since
+        # pandas 2.x no longer silently drops non-numeric columns by default.
+        corr_matrix = df.corr(numeric_only=True).abs()
         
         # Select the upper triangle of the matrix to avoid duplicating checks
         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))

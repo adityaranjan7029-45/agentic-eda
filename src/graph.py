@@ -31,6 +31,7 @@ from src.config import get_llm
 from src.nodes import (
     GraphState,
     PreprocessingPlan,
+    normalize_column_name,
     data_cleaning_node,
     type_conversion_node,
     imputation_node,
@@ -86,7 +87,7 @@ def invoke_with_retry(runnable, prompt):
     with_structured_output-wrapped one) with a real wait-and-retry loop for
     Groq's RateLimitError. Every direct LLM call in this file goes through
     this instead of calling .invoke() directly."""
-    last_error = None
+    last_error: Exception = RuntimeError("invoke_with_retry failed")
     for attempt in range(RATE_LIMIT_MAX_ATTEMPTS):
         try:
             return runnable.invoke(prompt)
@@ -169,43 +170,142 @@ Dataset profile:
     print(f"   [+] Plan: {plan.steps}")
     print(f"   [+] Reasoning: {plan.reasoning}")
 
+    # --- Resolve the target column ---
+    # There's exactly one source of truth here: state["target_col"], set by
+    # the Streamlit dropdown (or left unset if the user didn't pick one --
+    # deliberately NOT auto-guessed by an LLM; that would be a second,
+    # redundant detection path doing the same job the UI already does).
+    # The raw name is checked against the RAW dataframe's columns (this node
+    # runs before any cleaning), then normalized through the exact same
+    # function data_cleaning_node uses to rename columns -- so the value we
+    # store still matches once the dataframe has actually been cleaned, even
+    # if the casing/spelling the user picked doesn't match post-cleanup.
+    raw_target = state.get("target_col")
+    target_col = normalize_column_name(raw_target) if raw_target and raw_target in df.columns else None
+
+    if target_col:
+        print(f"   [+] Target column: '{target_col}'")
+    else:
+        print("   [+] No target column selected -- running in general profiling mode.")
+
     # Freeze a copy of the chosen steps now, before any node starts popping
     # them off plan.steps -- otherwise by the time the Synthesis Agent runs,
     # plan.steps is empty and we've lost the record of what actually happened.
-    return {"plan": plan, "steps_taken": list(plan.steps)}
+    return {"plan": plan, "steps_taken": list(plan.steps), "target_col": target_col}
 
 
-def build_insight_context(df: pd.DataFrame, target_col: str = None) -> str:
-    """Builds a richer statistical picture of the CLEANED dataframe for the
-    Insight Agent -- summary stats, top correlations, and top category values.
-    This is deliberately separate from build_profile() (which the Planner
-    uses on the raw data) because the Insight Agent needs to reason about
-    actual patterns, not just dtypes and nulls."""
+def _find_target_columns(df: pd.DataFrame, target_col: str):
+    """Resolves target_col against the ACTUAL columns present in the (fully
+    preprocessed) dataframe. Usually this is a simple exact match, but
+    encoding_node can rename a target column if it didn't cleanly convert to
+    boolean earlier (e.g. one-hot encoding "churn" with unusual text values
+    into "churn_active"/"churn_cancelled" instead of leaving one "churn"
+    column behind). This looks for that case too -- any column starting with
+    "{target_col}_" -- so a renamed target still gets found instead of
+    silently falling back to no-target mode."""
+    if not target_col:
+        return []
+    if target_col in df.columns:
+        return [target_col]
+    prefix = f"{target_col}_"
+    return [c for c in df.columns if c.startswith(prefix)]
+
+
+def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_columns: list = None) -> str:
+    """Builds a statistical picture of the CLEANED dataframe for the Insight
+    Agent. This is deliberately separate from build_profile() (which the
+    Planner uses on the raw data) because the Insight Agent needs to reason
+    about actual patterns, not just dtypes and nulls.
+
+    Two distinct branches, matching how a target column changes what's
+    actually worth showing:
+
+    - TARGET BRANCH (a target column was selected and survived preprocessing):
+      compute that column's correlation against every other numeric column --
+      including engineered ones, since e.g. "this engineered ratio predicts
+      churn" is a genuinely useful thing to know when there IS a specific
+      outcome being explained.
+
+    - GENERAL PROFILING BRANCH (no target): deliberately restrict summary
+      stats and correlations to ORIGINAL columns only, excluding anything
+      feature_engineering_node generated. Without a target to focus the
+      search, correlating dozens of automatically engineered ratio/bin/
+      cyclical columns against EACH OTHER is exactly the multiple-comparisons
+      trap that produced spurious "insights" (e.g. a coincidental 0.87
+      correlation between two unrelated engineered columns) in earlier runs.
+      Excluding them here means that noise is never even offered to the LLM
+      as a candidate insight, rather than relying on the LLM to correctly
+      dismiss it."""
+    engineered_columns = set(engineered_columns or [])
     parts = [f"Dataset shape: {df.shape[0]} rows, {df.shape[1]} columns"]
 
-    if target_col and target_col in df.columns:
-        parts.append(f"Target column: {target_col}")
-
     numeric_df = df.select_dtypes(include=["number"])
-    if not numeric_df.empty:
-        parts.append("\nNumeric column statistics:\n" + numeric_df.describe().to_string())
+    target_cols_found = _find_target_columns(df, target_col)
 
-        # Top correlated pairs, so the LLM doesn't have to eyeball a full matrix.
-        if numeric_df.shape[1] > 1:
-            corr = numeric_df.corr().abs()
-            cols = corr.columns
-            pairs = [
-                (cols[i], cols[j], corr.iloc[i, j])
-                for i in range(len(cols))
-                for j in range(i + 1, len(cols))
-            ]
-            pairs.sort(key=lambda p: p[2], reverse=True)
-            top_pairs = pairs[:10]
-            if top_pairs:
-                pairs_str = "\n".join(f"  {a} <-> {b}: {v:.2f}" for a, b, v in top_pairs)
-                parts.append(f"\nTop correlations (by |r|):\n{pairs_str}")
+    if target_col and not target_cols_found:
+        parts.append(
+            f"NOTE: a target column '{target_col}' was selected, but no matching column "
+            f"survived preprocessing (it may have been dropped). Falling back to general "
+            f"profiling -- do not assume a target exists."
+        )
 
+    if target_cols_found:
+        # --- Target branch ---
+        parts.append(f"Target column(s): {', '.join(target_cols_found)}")
+        parts.append("\nNumeric column statistics (all columns, including engineered features):\n" + numeric_df.describe().to_string())
+
+        target_lines = []
+        for tcol in target_cols_found:
+            if tcol not in numeric_df.columns or numeric_df.shape[1] < 2:
+                continue
+            corrs = numeric_df.corr()[tcol].drop(labels=[tcol], errors="ignore").abs().sort_values(ascending=False)
+            top = corrs.head(10)
+            if not top.empty:
+                lines = "\n".join(f"  {col}: {v:.2f}" for col, v in top.items())
+                target_lines.append(f"Columns most correlated with '{tcol}' (by |r|):\n{lines}")
+        if target_lines:
+            parts.append("\n=== TARGET RELATIONSHIPS ===\n" + "\n\n".join(target_lines))
+
+    else:
+        # --- General profiling branch: original columns only ---
+        original_numeric_df = numeric_df[[c for c in numeric_df.columns if c not in engineered_columns]]
+
+        if not original_numeric_df.empty:
+            parts.append(
+                "\nNumeric column statistics (original columns only -- engineered "
+                "features excluded, see note below):\n" + original_numeric_df.describe().to_string()
+            )
+
+            if original_numeric_df.shape[1] > 1:
+                corr = original_numeric_df.corr().abs()
+                cols = corr.columns
+                pairs = [
+                    (cols[i], cols[j], corr.iloc[i, j])
+                    for i in range(len(cols))
+                    for j in range(i + 1, len(cols))
+                ]
+                pairs.sort(key=lambda p: p[2], reverse=True)
+                top_pairs = pairs[:10]
+                if top_pairs:
+                    pairs_str = "\n".join(f"  {a} <-> {b}: {v:.2f}" for a, b, v in top_pairs)
+                    parts.append(f"\nTop correlations among original columns (by |r|):\n{pairs_str}")
+
+        excluded_count = len(engineered_columns & set(df.columns))
+        if excluded_count:
+            parts.append(
+                f"\n(Note: {excluded_count} automatically engineered column(s) were excluded from "
+                f"this summary. With no target column to focus the analysis, correlating many "
+                f"auto-generated columns against each other tends to surface coincidental patterns "
+                f"rather than real ones.)"
+            )
+
+    # Categorical columns: excluded from engineered filtering isn't needed for
+    # the target branch (kept as-is there), but for general profiling we
+    # exclude engineered categoricals too (e.g. feature_engineering_node's
+    # "_binned" columns, which are pandas Categorical dtype, not numeric).
     cat_df = df.select_dtypes(include=["object", "category", "bool"])
+    if not target_cols_found:
+        cat_df = cat_df[[c for c in cat_df.columns if c not in engineered_columns]]
     if not cat_df.empty:
         # Cap at 15 columns so a very wide dataset doesn't blow up the prompt.
         cat_lines = []
@@ -226,7 +326,8 @@ def insight_agent_node(state: GraphState):
 
     df = state["df"]
     target_col = state.get("target_col")
-    context = build_insight_context(df, target_col)
+    engineered_columns = state.get("engineered_columns", [])
+    context = build_insight_context(df, target_col, engineered_columns)
 
     llm = get_llm(model=AGENT_MODELS["insight"])
     structured_llm = llm.with_structured_output(InsightReport)
@@ -237,6 +338,15 @@ Identify the most important, specific, and actionable patterns in this data.
 Reference real column names and real numbers from the context below -- do not
 invent statistics that aren't derivable from it. Skip anything generic or
 already obvious (e.g. "the data has {df.shape[0]} rows" is not an insight).
+
+If the context below contains a "TARGET RELATIONSHIPS" section, that is the
+main thing you should be explaining -- prioritize insights about what drives
+the target column over everything else.
+
+Otherwise, the context reflects general profiling of the dataset's ORIGINAL
+columns (automatically engineered columns have already been excluded, so you
+don't need to second-guess whether a correlation is a coincidental artifact
+of feature engineering -- it isn't).
 
 Context:
 {context}
@@ -406,7 +516,16 @@ def visualization_agent_node(state: GraphState):
     for the pipeline to finish)."""
     print("-> Visualization Agent: Planning and generating charts...")
 
-    df = state["df"]
+    # .copy() is deliberate: execute_chart_code() hands this exact object to
+    # LLM-generated code as `df`. If a chart's code adds a scratch/helper
+    # column to make plotting easier (e.g. `df['age_Q4'] = ...`), that's a
+    # column ASSIGNMENT, not a reassignment -- it mutates the dataframe
+    # object in place. Without this copy, that mutation lands directly on
+    # state["df"] (same object), so a chart's private plotting helper column
+    # silently leaks into the "final cleaned dataset" everyone downstream
+    # (Synthesis Agent, the Streamlit preview/download) sees -- even though
+    # it was never part of the actual preprocessing pipeline.
+    df = state["df"].copy()
     insights = state.get("insights", [])
 
     os.makedirs(CHARTS_DIR, exist_ok=True)
@@ -606,15 +725,21 @@ def build_graph():
 
 if __name__ == "__main__":
     # Quick manual smoke test:
-    #   python -m src.graph path/to/your.csv
+    #   python -m src.graph path/to/your.csv [target_column]
+    # target_column is optional -- the raw column name as it appears in the
+    # CSV (e.g. "Churn", not "churn"). If omitted, the Planner will try to
+    # guess a target on its own; if it can't, the pipeline runs in general
+    # profiling mode.
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m src.graph <path_to_csv>")
+        print("Usage: python -m src.graph <path_to_csv> [target_column]")
         sys.exit(1)
 
     graph = build_graph()
     initial_state: GraphState = {"df": pd.read_csv(sys.argv[1])}
+    if len(sys.argv) >= 3:
+        initial_state["target_col"] = sys.argv[2]
     final_state = graph.invoke(initial_state)
 
     print("\n=== Final DataFrame ===")
