@@ -1,18 +1,33 @@
+# Pinned to the versions this project is actually tested against. Unpinned
+# deps are a common cause of "works locally, breaks on deploy" -- a fresh
+# install on Streamlit Cloud / HF Spaces resolves to whatever is newest that
+# day, which for the LangChain ecosystem can be a breaking major release.
+#
+# NOTE: the `langchain` meta-package was removed from this list deliberately.
+# Nothing in src/ imports it (only langchain_core, langchain_groq and
+# langchain_openai are used), and the old `langchain==0.3.0` pin conflicted
+# with langchain-core 1.x -- which made clean installs fail or silently
+# downgrade working packages.
+ 
 # Orchestration & LLMs
-langchain==0.3.0
-langchain-core
-langchain-openai
-langchain-groq
-langgraph
-langsmith
-groq
-# Environment Variables
-python-dotenv
-
-# Data Science Core
-pandas
-scikit-learn
-matplotlib
-seaborn
+langchain-core==1.6.3
+langchain-groq==1.1.3
+langchain-openai==1.6.2
+groq==0.37.1  # imported directly in src/graph.py for RateLimitError / BadRequestError
+langgraph==1.2.11
+ 
+# Environment variables (local .env; hosts inject secrets as real env vars)
+python-dotenv==1.2.2
+ 
+# Data science core
+pandas==3.0.2
+scikit-learn==1.8.0
+matplotlib==3.10.9
+seaborn==0.13.2
+ 
+# Schemas
+pydantic==2.13.3
+ 
 # UI
-streamlit
+streamlit==1.63.0
+ 

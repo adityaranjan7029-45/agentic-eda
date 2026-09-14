@@ -17,91 +17,189 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.graph import build_graph  # noqa: E402  (must come after the sys.path fix above)
+SAMPLE_CSV = REPO_ROOT / "data" / "raw" / "sample_customer_churn.csv"
 
 # ==========================================
-# ⚙️ Page Configuration
+# ⚙️ Page configuration
 # ==========================================
 st.set_page_config(
     page_title="Agentic EDA",
-    page_icon="🔥",
+    page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # ==========================================
-# 🎨 Custom CSS Injection (Animated Orange Theme)
+# 🎨 Theme
 # ==========================================
-st.markdown("""
+# IMPORTANT: this deliberately does NOT use @media (prefers-color-scheme: dark)
+# to pick text colors. Streamlit's active theme and the visitor's OS theme are
+# INDEPENDENT -- a visitor whose OS is dark can still be viewing the app in
+# Streamlit's light theme. Keying colors off the OS preference produced exactly
+# that failure: white body text painted onto a white Streamlit background,
+# leaving the hero subtitle and card text invisible.
+#
+# Instead everything derives from `currentColor` (the active Streamlit theme's
+# own text color) via color-mix, so borders, surfaces and muted text always
+# track whatever theme is actually applied. The only hardcoded colors are the
+# orange accents, which are legible on both light and dark backgrounds.
+st.markdown(
+    """
 <style>
-    /* 1. Page Fade-In Animation */
-    @keyframes fadeIn {
-        0% { opacity: 0; transform: translateY(20px); }
-        100% { opacity: 1; transform: translateY(0); }
+    :root {
+        --accent-from: #FF6B35;
+        --accent-to:   #F7931E;
+        --accent-soft: rgba(255, 107, 53, 0.10);
+        --accent-line: rgba(255, 107, 53, 0.30);
     }
 
-    .block-container {
-        animation: fadeIn 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    }
+    /* Tighten Streamlit's default top padding -- the stock gap is large
+       enough that the hero gets pushed below the fold on a laptop. */
+    .block-container { padding-top: 2.5rem; max-width: 1180px; }
 
-    /* 2. Gradient Header Text with subtle shift */
-    @keyframes gradientShift {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
-    }
-
-    .title-text {
-        background: linear-gradient(-45deg, #FF4B4B, #FF8C00, #FF3366, #FF8C00);
-        background-size: 300% 300%;
-        animation: gradientShift 6s ease infinite;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 3.5em;
+    /* ---------- Hero ----------
+       The `[data-testid="stMarkdownContainer"]` prefix is not decorative:
+       Streamlit ships `[data-testid="stMarkdownContainer"] p { font-size: ... }`,
+       which outranks a bare `.hero-title` class on specificity and silently
+       reverts the heading to body size. Matching its specificity fixes that. */
+    [data-testid="stMarkdownContainer"] p.hero-title {
+        font-size: clamp(2.1rem, 4.6vw, 3rem);
         font-weight: 800;
-        margin-bottom: 0px;
+        letter-spacing: -0.025em;
+        line-height: 1.08;
+        margin: 0 0 0.5rem 0;
+        background: linear-gradient(92deg, var(--accent-from), var(--accent-to));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    [data-testid="stMarkdownContainer"] p.hero-sub {
+        font-size: 1.05rem;
+        opacity: 0.75;
+        margin: 0 0 0.6rem 0;
+        max-width: 62ch;
+        line-height: 1.55;
     }
 
-    /* 3. Glowing, Breathing Primary Button */
-    @keyframes pulseGlow {
-        0% { box-shadow: 0 0 10px rgba(255, 140, 0, 0.4); }
-        50% { box-shadow: 0 0 25px rgba(255, 75, 75, 0.8); }
-        100% { box-shadow: 0 0 10px rgba(255, 140, 0, 0.4); }
-    }
-
-    .stButton>button {
-        background: linear-gradient(90deg, #FF4B4B 0%, #FF8C00 100%);
-        color: white;
-        border-radius: 8px;
-        border: none;
-        animation: pulseGlow 2.5s infinite;
-        transition: all 0.3s ease;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
-    .stButton>button:hover {
-        transform: translateY(-3px) scale(1.02);
-        animation: none; /* Stops the breathing while hovering */
-        box-shadow: 0 8px 25px rgba(255, 140, 0, 0.8);
-    }
-
-    /* File Uploader Hover Animation */
-    [data-testid="stFileUploadDropzone"] {
-        border: 2px dashed #FF8C00;
+    /* ---------- Step cards (empty state) ---------- */
+    .steps { display: flex; gap: 0.9rem; flex-wrap: wrap; margin: 0.6rem 0 0.2rem 0; }
+    .step {
+        flex: 1 1 220px;
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
         border-radius: 12px;
-        background-color: rgba(255, 140, 0, 0.05);
-        transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        padding: 1rem 1.1rem;
+        background: color-mix(in srgb, currentColor 3%, transparent);
+    }
+    .step-n {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 26px; height: 26px; border-radius: 7px;
+        background: var(--accent-soft);
+        border: 1px solid var(--accent-line);
+        font-size: 0.78rem; font-weight: 700;
+        color: var(--accent-from);
+        margin-bottom: 0.55rem;
+    }
+    .step-t { font-weight: 650; font-size: 0.95rem; margin-bottom: 0.25rem; }
+    .step-d { font-size: 0.85rem; opacity: 0.72; line-height: 1.5; }
+
+    /* ---------- Agent chips ---------- */
+    .chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.2rem; }
+    .chip {
+        font-size: 0.76rem;
+        padding: 0.28rem 0.62rem;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+        background: color-mix(in srgb, currentColor 5%, transparent);
+        opacity: 0.8;
+        white-space: nowrap;
     }
 
-    [data-testid="stFileUploadDropzone"]:hover {
-        background-color: rgba(255, 140, 0, 0.15);
-        border-color: #FF4B4B;
-        transform: scale(1.01);
+    /* ---------- Buttons ---------- */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(92deg, var(--accent-from), var(--accent-to));
+        border: none;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+        padding: 0.6rem 1rem;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
     }
+    .stButton > button[kind="primary"]:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(255, 107, 53, 0.32);
+    }
+    /* Without this the disabled Run button keeps the full-strength gradient
+       and reads as clickable -- the exact opposite of what disabled means. */
+    .stButton > button[kind="primary"]:disabled {
+        background: color-mix(in srgb, currentColor 12%, transparent);
+        color: color-mix(in srgb, currentColor 45%, transparent);
+        box-shadow: none;
+        transform: none;
+    }
+
+    /* ---------- Upload dropzone ---------- */
+    [data-testid="stFileUploaderDropzone"] {
+        border: 1.5px dashed var(--accent-line);
+        border-radius: 12px;
+        background: var(--accent-soft);
+        transition: border-color 0.2s ease, background 0.2s ease;
+    }
+    [data-testid="stFileUploaderDropzone"]:hover { border-color: var(--accent-from); }
+
+    /* ---------- Tabs ---------- */
+    .stTabs [data-baseweb="tab-list"] { gap: 0.35rem; }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: 0.5rem 0.95rem;
+        font-weight: 550;
+    }
+
+    /* Hide the default Streamlit chrome for a cleaner deployed look. The
+       Deploy button has its own testid and is NOT covered by #MainMenu --
+       it stays visible in the top-right on a deployed app without this. */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+    [data-testid="stAppDeployButton"] { display: none; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ==========================================
+# 🔑 API key resolution
+# ==========================================
+# Two sources, in priority order:
+#   1. A key the visitor typed into the sidebar (session-only, never written
+#      to disk, never logged) -- lets someone use their own quota instead of
+#      the deployer's.
+#   2. The deployer's own key, from st.secrets (Streamlit Cloud / HF Spaces)
+#      or a local .env -- so the app works out of the box for casual visitors.
+#
+# Whichever wins gets pushed into os.environ, because src/config.py reads
+# GROQ_API_KEY from the environment and is deliberately Streamlit-agnostic
+# (it also has to work from `python -m src.graph`).
+def _secret(name: str):
+    """Reads from st.secrets if a secrets file exists, else falls back to the
+    environment. Wrapped in try/except because accessing st.secrets when no
+    secrets.toml is present raises rather than returning None."""
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
+        pass
+    return os.getenv(name)
+
+
+OWNER_KEY = _secret("GROQ_API_KEY")
+
+
+def resolve_api_key(user_key: str):
+    """User-supplied key wins; otherwise fall back to the deployer's."""
+    key = (user_key or "").strip() or OWNER_KEY
+    if key:
+        os.environ["GROQ_API_KEY"] = key
+    return key
+
 
 # ==========================================
 # 🧠 Cached graph + friendly per-node status text
@@ -109,198 +207,402 @@ st.markdown("""
 # st.cache_resource means build_graph() (which compiles the whole StateGraph)
 # only runs once per server process, not on every single Streamlit rerun
 # (Streamlit reruns this entire script top-to-bottom on every interaction).
+#
+# The import lives inside the function rather than at module level so the page
+# still renders (and can show a helpful error) if a heavy dependency is missing
+# on a fresh deploy, instead of dying with a blank screen on import.
 @st.cache_resource
 def get_graph():
+    from src.graph import build_graph
+
     return build_graph()
 
 
+@st.cache_data
+def load_sample():
+    return pd.read_csv(SAMPLE_CSV)
+
+
 NODE_MESSAGES = {
-    "planner": "🧠 **Planner Agent:** Analyzing metadata and drafting a preprocessing plan...",
-    "data_cleaning": "🧹 **Preprocessing:** Cleaning whitespace, duplicates, and hidden nulls...",
-    "type_conversion": "🔡 **Preprocessing:** Converting column data types...",
-    "imputation": "🩹 **Preprocessing:** Filling in missing values...",
-    "outlier_handling": "📏 **Preprocessing:** Capping extreme outliers...",
-    "feature_engineering": "🛠️ **Preprocessing:** Engineering new features...",
-    "encoding": "🔢 **Preprocessing:** Encoding categorical columns...",
-    "feature_transformation": "📐 **Preprocessing:** Reshaping skewed distributions...",
-    "scaling": "⚖️ **Preprocessing:** Scaling numeric features...",
-    "dimensionality_reduction": "📉 **Preprocessing:** Reducing dimensionality (PCA)...",
-    "feature_selection": "🧬 **Preprocessing:** Dropping redundant features...",
-    "insight_agent": "🔍 **Insight Agent:** Searching the cleaned data for patterns...",
-    "visualization_agent": "📊 **Visualization Agent:** Generating charts...",
-    "synthesis_agent": "📝 **Synthesis Agent:** Writing the final report...",
-    "critic_agent": "🕵️ **Critic Agent:** Reviewing the report for accuracy...",
+    "planner": "🧠 **Planner Agent** — analyzing metadata and drafting a preprocessing plan",
+    "data_cleaning": "🧹 Cleaning whitespace, duplicates, and hidden nulls",
+    "type_conversion": "🔡 Converting column data types",
+    "imputation": "🩹 Filling in missing values",
+    "outlier_handling": "📏 Capping extreme outliers",
+    "feature_engineering": "🛠️ Engineering new features",
+    "encoding": "🔢 Encoding categorical columns",
+    "feature_transformation": "📐 Reshaping skewed distributions",
+    "scaling": "⚖️ Scaling numeric features",
+    "dimensionality_reduction": "📉 Reducing dimensionality (PCA)",
+    "feature_selection": "🧬 Dropping redundant features",
+    "insight_agent": "🔍 **Insight Agent** — searching the cleaned data for patterns",
+    "visualization_agent": "📊 **Visualization Agent** — generating charts",
+    "synthesis_agent": "📝 **Synthesis Agent** — writing the final report",
+    "critic_agent": "🕵️ **Critic Agent** — reviewing the report for accuracy",
 }
 
+AGENTS = ["Planner", "Insight", "Visualization", "Synthesis", "Critic"]
+
 # ==========================================
-# 🗄️ Sidebar Layout
+# 🗄️ Sidebar
 # ==========================================
 with st.sidebar:
-    st.markdown("### ⚙️ Engine Settings")
-    st.caption("Model per agent (set in src/graph.py :: AGENT_MODELS, all served via Groq)")
-    st.text("Planner:        openai/gpt-oss-20b")
-    st.text("Insight:        openai/gpt-oss-120b")
-    st.text("Visualization:  openai/gpt-oss-120b")
-    st.text("Synthesis:      openai/gpt-oss-20b")
-    st.text("Critic:         openai/gpt-oss-120b")
-    st.markdown("---")
-    st.markdown("### 🟢 System Status")
-    if os.getenv("GROQ_API_KEY"):
-        st.success("GROQ_API_KEY loaded")
+    st.markdown("### 🔑 Groq API key")
+
+    user_key = st.text_input(
+        "Your Groq API key",
+        type="password",
+        placeholder="gsk_...",
+        help=(
+            "Optional. Paste your own free key from console.groq.com to run on "
+            "your own rate limit instead of this app's shared one. It's kept in "
+            "this browser session only — never stored or logged."
+        ),
+        label_visibility="collapsed",
+    )
+
+    active_key = resolve_api_key(user_key)
+
+    if user_key.strip():
+        st.success("Using your key — your own rate limit applies.")
+    elif OWNER_KEY:
+        st.info("Using the app's shared key. Add your own above for higher limits.")
     else:
-        st.error("GROQ_API_KEY missing -- add it to your .env")
+        st.error("No key available. Paste one above to run the pipeline.")
+
+    st.caption("[Get a free key →](https://console.groq.com/keys)")
+
+    st.divider()
+    st.markdown("### 🤖 Agents")
+    st.caption("Models set in `src/graph.py :: AGENT_MODELS`, all served via Groq.")
+    st.code(
+        "Planner        gpt-oss-20b\n"
+        "Insight        gpt-oss-120b\n"
+        "Visualization  gpt-oss-120b\n"
+        "Synthesis      gpt-oss-20b\n"
+        "Critic         gpt-oss-120b",
+        language=None,
+    )
+
+    st.divider()
+    st.caption(
+        "Groq's free tier allows 8,000 tokens/min. Very wide datasets get "
+        "summarized to fit — raise `MAX_DESCRIBE_COLS` on a paid tier."
+    )
 
 # ==========================================
-# 🎨 UI Header
+# 🎬 Hero
 # ==========================================
-st.markdown('<p class="title-text">Agentic EDA ⚡</p>', unsafe_allow_html=True)
-st.markdown("**Autonomous, multi-agent Data Analyst powered by LangGraph and Groq.**")
-st.markdown("---")
+st.markdown('<p class="hero-title">Agentic EDA</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="hero-sub">Drop in a raw CSV. Five specialized agents plan the preprocessing, '
+    "clean the data, find what actually matters, chart it, and write the report — "
+    "with no human choosing the steps in between.</p>",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="chips">'
+    + "".join(f'<span class="chip">{a} Agent</span>' for a in AGENTS)
+    + '<span class="chip">LangGraph</span><span class="chip">Groq</span>'
+    + "</div>",
+    unsafe_allow_html=True,
+)
+
+st.write("")
 
 # ==========================================
-# 📂 File Upload & Handling
+# 📂 Input
 # ==========================================
-uploaded_file = st.file_uploader("Drop your dataset here (CSV)", type=["csv"])
+if "df" not in st.session_state:
+    st.session_state.df = None
+    st.session_state.source_name = None
+
+up_col, sample_col = st.columns([3, 1.15], gap="medium")
+
+with up_col:
+    uploaded_file = st.file_uploader("Upload a CSV", type=["csv"], label_visibility="collapsed")
+
+with sample_col:
+    st.write("")
+    if st.button("Try the sample dataset", width="stretch"):
+        st.session_state.df = load_sample()
+        st.session_state.source_name = SAMPLE_CSV.name
+        st.session_state.pop("result", None)
+    st.caption("Customer churn CSV with deliberate missing values.")
+
+# Be explicit about what leaves the machine. The pipeline sends column names,
+# dtypes, summary statistics AND a handful of literal sample rows to Groq's
+# API -- someone uploading real customer or medical data deserves to know that
+# before they click run, not after.
+st.caption(
+    "🔒 **Your data leaves this app.** Column names, summary statistics and a few "
+    "sample rows are sent to Groq's API to generate the analysis. Don't upload "
+    "personal, medical, financial or otherwise confidential data. "
+    "Uploads are processed in memory and not retained after the session ends."
+)
 
 if uploaded_file is not None:
-    # Save the uploaded file to <repo_root>/data/raw, regardless of cwd.
-    raw_data_dir = REPO_ROOT / "data" / "raw"
-    raw_data_dir.mkdir(parents=True, exist_ok=True)
-    file_path = raw_data_dir / uploaded_file.name
-
+    # Persist the upload so a rerun doesn't lose it.
+    raw_dir = REPO_ROOT / "data" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    file_path = raw_dir / uploaded_file.name
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
+    try:
+        new_df = pd.read_csv(file_path)
+        if st.session_state.source_name != uploaded_file.name:
+            st.session_state.pop("result", None)
+        st.session_state.df = new_df
+        st.session_state.source_name = uploaded_file.name
+    except Exception as e:
+        st.error(f"Couldn't read that CSV: {e}")
+        st.session_state.df = None
 
-    # Create two columns for a cleaner layout
-    col1, col2 = st.columns([2, 1])
+df = st.session_state.df
 
-    with col1:
-        st.success(f"File `{uploaded_file.name}` uploaded securely to backend!")
-        try:
-            df = pd.read_csv(file_path)
-            with st.expander("👀 Preview Raw Data", expanded=False):
-                st.dataframe(df.head(), use_container_width=True)
-        except Exception as e:
-            st.error(f"Could not read CSV preview: {e}")
-            df = None
+# ==========================================
+# 🫙 Empty state
+# ==========================================
+if df is None:
+    st.markdown(
+        """
+<div class="steps">
+  <div class="step">
+    <div class="step-n">1</div>
+    <div class="step-t">Upload</div>
+    <div class="step-d">Any CSV — messy is fine. Missing values, mixed types and
+    junk placeholders are what the cleaning nodes are for.</div>
+  </div>
+  <div class="step">
+    <div class="step-n">2</div>
+    <div class="step-t">Pick a target (optional)</div>
+    <div class="step-d">Name the column you're trying to explain, like
+    <code>Churn</code>, and the analysis focuses on what drives it.</div>
+  </div>
+  <div class="step">
+    <div class="step-n">3</div>
+    <div class="step-t">Run</div>
+    <div class="step-d">The agents plan, preprocess, analyze, chart and
+    fact-check — then hand back a report you can download.</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
-    if df is not None:
-        with col2:
-            st.info(f"**Shape:** {df.shape[0]} rows, {df.shape[1]} columns")
-            st.info(f"**Memory:** {(df.memory_usage(deep=True).sum() / 1024**2):.2f} MB")
+    with st.expander("How it works under the hood"):
+        st.markdown(
+            """
+The LLMs **never write or execute arbitrary data code**. Each agent reasons and
+decides — which preprocessing steps apply, what patterns matter, how to phrase a
+finding — while the actual transformation runs through hand-written, tested
+pandas/scikit-learn functions constrained to a fixed vocabulary.
 
-        # ==========================================
-        # 🎯 Target Column Selection
-        # ==========================================
-        # Optional. Picking a column here (e.g. "Churn") tells the Insight
-        # Agent to focus specifically on what drives it, instead of it getting
-        # buried under coincidental correlations among the pipeline's
-        # automatically engineered features. Leaving this blank runs the
-        # pipeline in general profiling mode -- also fine, just less focused.
-        st.markdown("---")
-        NO_TARGET_OPTION = "(none -- general profiling)"
-        target_choice = st.selectbox(
-            "🎯 Select Target Column (optional)",
-            [NO_TARGET_OPTION] + list(df.columns),
-            help=(
-                "The column you're trying to predict or explain (e.g. 'Churn', 'Price'). "
-                "The Insight Agent will focus on what drives it. Leave as "
-                f"'{NO_TARGET_OPTION}' for general findings about the dataset instead."
-            ),
+```
+Planner (LLM)
+   └─ picks & orders steps from a fixed list
+        ↓
+Preprocessing nodes (deterministic pandas/sklearn)
+   cleaning → types → imputation → outliers → feature engineering →
+   encoding → transformation → scaling → PCA → selection
+        ↓
+Insight Agent (LLM)  →  Visualization Agent (LLM + sandboxed exec)
+        ↓
+Synthesis Agent (LLM) ⇄ Critic Agent (LLM, rejects up to 2x)
+        ↓
+Markdown report + PNG charts
+```
+
+The one place generated code *does* run — chart drawing — is sandboxed three
+ways: a static AST check that rejects imports and dunder access before
+anything executes, a restricted builtins table, and a write jail that confines
+`savefig` to the charts directory. See `tests/test_sandbox.py`.
+"""
         )
-        selected_target_col = target_choice if target_choice != NO_TARGET_OPTION else None
+    st.stop()
 
-        # ==========================================
-        # 🚀 Execution Trigger
-        # ==========================================
+# ==========================================
+# 📋 Dataset summary + target selection
+# ==========================================
+st.success(f"Loaded **{st.session_state.source_name}**")
 
-        # Using a container to center the button visually
-        _, center_col, _ = st.columns([1, 2, 1])
-        with center_col:
-            run_clicked = st.button("🔥 Initialize Autonomous Analysis", use_container_width=True)
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Rows", f"{df.shape[0]:,}")
+m2.metric("Columns", f"{df.shape[1]:,}")
+m3.metric("Missing cells", f"{int(df.isnull().sum().sum()):,}")
+m4.metric("Memory", f"{df.memory_usage(deep=True).sum() / 1024 ** 2:.2f} MB")
 
-        if run_clicked:
-            if not os.getenv("GROQ_API_KEY"):
-                st.error("GROQ_API_KEY is not set. Add it to your .env file before running the pipeline.")
-            else:
-                graph = get_graph()
-                initial_state = {"df": df}
-                if selected_target_col:
-                    initial_state["target_col"] = selected_target_col
-                # else: leave target_col unset -- planner_node treats that as
-                # "no target", general profiling mode.
-                final_state = dict(initial_state)
-                pipeline_error = None
+with st.expander("Preview raw data"):
+    st.dataframe(df.head(20), width="stretch")
 
-                with st.status("Running Agentic EDA pipeline...", expanded=True) as status:
-                    try:
-                        # graph.stream() yields one dict per node as it finishes,
-                        # e.g. {"planner": {"plan": ..., "steps_taken": [...]}} --
-                        # this is what lets the UI show REAL progress instead of
-                        # a fixed sequence of sleeps that always looks the same
-                        # regardless of what the pipeline actually did.
-                        for step_output in graph.stream(initial_state):
-                            for node_name, node_result in step_output.items():
-                                final_state.update(node_result)
-                                st.write(NODE_MESSAGES.get(node_name, f"➡️ **{node_name}** finished."))
+NO_TARGET = "(none — general profiling)"
+target_choice = st.selectbox(
+    "🎯 Target column (optional)",
+    [NO_TARGET] + list(df.columns),
+    help=(
+        "The column you're trying to predict or explain, e.g. 'Churn' or 'Price'. "
+        "The Insight Agent will focus on what drives it. Leave blank for general "
+        "findings about the dataset instead."
+    ),
+)
+selected_target = target_choice if target_choice != NO_TARGET else None
 
-                        status.update(label="Analysis Complete!", state="complete", expanded=False)
-                    except Exception as e:
-                        pipeline_error = e
-                        status.update(label="Pipeline failed", state="error", expanded=True)
-                        st.write(f"❌ {type(e).__name__}: {e}")
+run_clicked = st.button(
+    "⚡ Run the analysis",
+    type="primary",
+    width="stretch",
+    disabled=not active_key,
+)
 
-                if pipeline_error is not None:
-                    st.error(
-                        "The pipeline hit an error and couldn't finish. "
-                        "See the failure details above. Common causes: an invalid/rate-limited "
-                        "Groq API key, or a CSV shape the preprocessing steps didn't expect."
-                    )
-                else:
-                    # ==========================================
-                    # 📑 Results
-                    # ==========================================
-                    report_md = final_state.get("report_markdown", "")
-                    charts = final_state.get("charts", [])
-                    critic_approved = final_state.get("critic_approved")
-                    critic_feedback = final_state.get("critic_feedback")
+if not active_key:
+    st.warning("Add a Groq API key in the sidebar to run the pipeline.")
 
-                    resolved_target = final_state.get("target_col")
-                    if resolved_target:
-                        st.caption(f"🎯 Analysis focused on target column: **{resolved_target}**")
+# ==========================================
+# 🚀 Run
+# ==========================================
+if run_clicked:
+    graph = get_graph()
+    initial_state = {"df": df}
+    if selected_target:
+        initial_state["target_col"] = selected_target
+
+    final_state = dict(initial_state)
+    pipeline_error = None
+
+    with st.status("Running the pipeline…", expanded=True) as status:
+        try:
+            # graph.stream() yields one dict per node as it finishes, e.g.
+            # {"planner": {...}} -- this is what lets the UI show REAL progress
+            # instead of a fixed sequence of sleeps.
+            for step_output in graph.stream(initial_state):
+                for node_name, node_result in step_output.items():
+                    final_state.update(node_result)
+                    st.write(NODE_MESSAGES.get(node_name, f"➡️ {node_name} finished"))
+            status.update(label="Analysis complete", state="complete", expanded=False)
+        except Exception as e:
+            pipeline_error = e
+            status.update(label="Pipeline failed", state="error", expanded=True)
+            st.write(f"❌ **{type(e).__name__}:** {e}")
+
+    if pipeline_error is not None:
+        st.session_state.pop("result", None)
+        msg = str(pipeline_error).lower()
+        # Map the failure modes people actually hit to specific, actionable
+        # advice rather than one generic "something went wrong".
+        if "rate_limit" in msg or "request too large" in msg or "413" in msg:
+            st.error(
+                "**Groq rate limit hit.** The free tier allows 8,000 tokens/minute. "
+                "Wait a minute and retry, use a narrower dataset, or paste your own "
+                "API key in the sidebar."
+            )
+        elif "api key" in msg or "authentication" in msg or "401" in msg:
+            st.error(
+                "**API key rejected.** Check the key in the sidebar — get a fresh free "
+                "one at console.groq.com/keys."
+            )
+        else:
+            st.error(
+                "The pipeline hit an error and couldn't finish. The failure details are "
+                "above. Common causes: a rate-limited Groq key, or a CSV shape the "
+                "preprocessing steps didn't expect."
+            )
+    else:
+        st.session_state.result = final_state
+
+# ==========================================
+# 📑 Results
+# ==========================================
+result = st.session_state.get("result")
+if result:
+    report_md = result.get("report_markdown", "")
+    charts = result.get("charts", [])
+    final_df = result.get("df")
+    insights = result.get("insights", [])
+    critic_approved = result.get("critic_approved")
+    critic_feedback = result.get("critic_feedback")
+    steps_taken = result.get("steps_taken", [])
+    resolved_target = result.get("target_col")
+
+    st.divider()
+
+    head_l, head_r = st.columns([3, 1])
+    with head_l:
+        st.markdown("## Results")
+        if resolved_target:
+            st.caption(f"Focused on target column **{resolved_target}**")
+        else:
+            st.caption("General profiling mode — no target column selected.")
+    with head_r:
+        if critic_approved is True:
+            st.success("✅ Critic approved")
+        elif critic_approved is False:
+            st.warning("⚠️ Shipped after max revisions")
+
+    if critic_feedback:
+        with st.expander("Critic's verdict"):
+            st.write(critic_feedback)
+
+    tab_report, tab_charts, tab_data, tab_run = st.tabs(
+        ["📝 Report", f"📊 Charts ({len(charts)})", "🔬 Cleaned data", "⚙️ Run details"]
+    )
+
+    with tab_report:
+        if report_md:
+            st.markdown(report_md)
+            st.download_button(
+                "⬇️ Download report (.md)",
+                data=report_md,
+                file_name="agentic_eda_report.md",
+                mime="text/markdown",
+            )
+        else:
+            st.warning("No report was generated.")
+
+    with tab_charts:
+        if charts:
+            cols = st.columns(2)
+            for i, chart in enumerate(charts):
+                with cols[i % 2]:
+                    if os.path.exists(chart["path"]):
+                        st.image(chart["path"], width="stretch")
+                        st.caption(f"**{chart['title']}** — {chart.get('rationale', '')}")
                     else:
-                        st.caption("🎯 No target column identified -- general profiling mode.")
+                        st.warning(f"Chart file missing: {chart['path']}")
+        else:
+            st.info("No charts were generated for this run.")
 
-                    st.markdown("### 📑 Final Intelligence Report")
+    with tab_data:
+        if final_df is not None:
+            c1, c2 = st.columns(2)
+            c1.metric("Final rows", f"{final_df.shape[0]:,}")
+            c2.metric("Final columns", f"{final_df.shape[1]:,}")
+            st.dataframe(final_df.head(50), width="stretch")
+            st.download_button(
+                "⬇️ Download cleaned data (.csv)",
+                data=final_df.to_csv(index=False).encode("utf-8"),
+                file_name="cleaned_dataset.csv",
+                mime="text/csv",
+            )
+            st.caption(
+                "Numeric columns are z-score scaled — that's intentional, it's what makes "
+                "the output ML-ready. ID-like columns are deliberately left untouched."
+            )
+        else:
+            st.info("No cleaned dataframe in the final state.")
 
-                    if critic_approved is True:
-                        st.success(f"✅ Critic approved this report. {critic_feedback or ''}")
-                    elif critic_approved is False:
-                        st.warning(
-                            f"⚠️ Shipped after the maximum revision attempts -- Critic's last "
-                            f"feedback: {critic_feedback or '(none)'}"
-                        )
+    with tab_run:
+        st.markdown("**Preprocessing steps the Planner chose:**")
+        if steps_taken:
+            st.markdown("\n".join(f"{i}. `{s}`" for i, s in enumerate(steps_taken, 1)))
+        else:
+            st.caption("No preprocessing was needed.")
 
-                    if report_md:
-                        st.markdown(report_md)
-                        st.download_button(
-                            "⬇️ Download Report (.md)",
-                            data=report_md,
-                            file_name="report.md",
-                            mime="text/markdown",
-                        )
-                    else:
-                        st.warning("No report was generated.")
+        if insights:
+            st.markdown("**Raw insights (before the report was written):**")
+            for ins in insights:
+                st.markdown(
+                    f"- **[{ins['importance']}/5] {ins['title']}** — {ins['description']}  \n"
+                    f"  _Evidence: {ins['supporting_stat']}_"
+                )
 
-                    if charts:
-                        st.markdown("### 📊 Charts")
-                        chart_cols = st.columns(2)
-                        for i, chart in enumerate(charts):
-                            with chart_cols[i % 2]:
-                                st.image(chart["path"], caption=chart["title"], use_column_width=True)
-
-                    with st.expander("🔬 Final cleaned dataset (preview)", expanded=False):
-                        final_df = final_state.get("df")
-                        if final_df is not None:
-                            st.dataframe(final_df.head(20), use_container_width=True)
-                            st.caption(f"Final shape: {final_df.shape[0]} rows, {final_df.shape[1]} columns")
+        st.caption(f"Critic revisions used: {result.get('critic_revisions', 0)}")

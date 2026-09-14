@@ -1,23 +1,12 @@
-"""
-LangGraph wiring for Agentic EDA.
-
-Architecture: a single Planner Agent (LLM) reads the dataset profile and
-decides which preprocessing steps are needed and in what order. Every step
-after that is executed by the existing hand-written, deterministic pandas
-functions in src/nodes.py -- the LLM never writes or executes code, it only
-chooses and sequences steps from a fixed, known-safe vocabulary.
-
-Flow:
-    planner -> (conditional routing on plan.steps) -> step node -> ... -> END
-"""
-
+import ast
 import builtins
 import io
 import os
 import re
 import signal
 import time
-from groq import RateLimitError
+from pathlib import Path
+from groq import RateLimitError, BadRequestError
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend -- we only ever save figures, never display them
 import matplotlib.pyplot as plt
@@ -45,21 +34,6 @@ from src.nodes import (
 )
 from src.schemas import InsightReport, VisualizationPlan, CriticVerdict
 
-# Which Groq model each agent uses. Kept as one dict so model choices are
-# visible/tunable in one place instead of scattered through node functions.
-#
-# NOTE: llama-3.3-70b-versatile and llama-3.1-8b-instant were both shut down
-# by Groq on 2026-08-16 -- openai/gpt-oss-120b and openai/gpt-oss-20b are
-# Groq's recommended replacements (console.groq.com/docs/deprecations).
-#
-# Both models have IDENTICAL free-tier limits (8K tokens/minute each) --
-# but they're tracked as SEPARATE per-model buckets. A full pipeline run
-# makes 5+ LLM calls back to back (more if a chart needs fixing or the
-# Critic rejects a draft), which can exceed a single model's 8K TPM bucket.
-# Splitting the lighter-weight agents (Planner, Synthesis) onto gpt-oss-20b
-# means they draw from a separate budget than the heavier reasoning agents
-# (Insight, Visualization, Critic) on gpt-oss-120b -- roughly doubling the
-# total headroom available to one run.
 AGENT_MODELS = {
     "planner": "openai/gpt-oss-20b",
     "insight": "openai/gpt-oss-120b",
@@ -68,39 +42,69 @@ AGENT_MODELS = {
     "critic": "openai/gpt-oss-120b",
 }
 
-CHARTS_DIR = "charts"
+
+CHARTS_DIR = os.getenv(
+    "CHARTS_DIR",
+    str(Path(__file__).resolve().parent.parent / "charts"),
+)
 MAX_CHART_FIX_ATTEMPTS = 2  # how many times we let the LLM try to fix its own broken chart code
 MAX_CRITIC_REVISIONS = 2  # how many times the Critic can send the report back before we ship it anyway
 
-# Retry settings for Groq rate limits specifically. ChatGroq already retries
-# transient errors twice by default (max_retries=2 on the client), but those
-# retries fire almost immediately -- fine for a network blip, not enough for
-# a genuine tokens-per-minute shortfall, which needs real seconds to clear
-# from Groq's rolling 60s window. This adds a second, slower retry layer
-# specifically for RateLimitError (HTTP 429).
+
 RATE_LIMIT_MAX_ATTEMPTS = 4
 RATE_LIMIT_BASE_WAIT_SECONDS = 15  # attempt 1 waits 15s, attempt 2 waits 30s, attempt 3 waits 45s...
 
 
+TOOL_USE_FAILED_MAX_ATTEMPTS = 3
+TOOL_USE_FAILED_WAIT_SECONDS = 3  # short and fixed -- this isn't a rate-limit bucket refilling, just a reroll
+
+
+def _is_tool_use_failed(e: BadRequestError) -> bool:
+    body = getattr(e, "body", None) or {}
+    error = body.get("error", {}) if isinstance(body, dict) else {}
+    return error.get("code") == "tool_use_failed"
+
+
 def invoke_with_retry(runnable, prompt):
     """Wraps a .invoke() call (on either a plain LLM or a
-    with_structured_output-wrapped one) with a real wait-and-retry loop for
-    Groq's RateLimitError. Every direct LLM call in this file goes through
+    with_structured_output-wrapped one) with a real wait-and-retry loop
+    covering two distinct Groq failure modes: RateLimitError (HTTP 429) and
+    the "tool_use_failed" flavor of BadRequestError (HTTP 400) described
+    above. One flat attempt loop handles both -- each attempt either
+    succeeds, hits a retryable error (and sleeps an amount appropriate to
+    THAT error type before the next attempt), or hits a non-retryable error
+    and raises immediately. Every direct LLM call in this file goes through
     this instead of calling .invoke() directly."""
+    max_attempts = max(RATE_LIMIT_MAX_ATTEMPTS, TOOL_USE_FAILED_MAX_ATTEMPTS)
     last_error: Exception = RuntimeError("invoke_with_retry failed")
-    for attempt in range(RATE_LIMIT_MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         try:
             return runnable.invoke(prompt)
         except RateLimitError as e:
             last_error = e
-            if attempt == RATE_LIMIT_MAX_ATTEMPTS - 1:
+            if attempt >= RATE_LIMIT_MAX_ATTEMPTS - 1:
                 break
             wait = RATE_LIMIT_BASE_WAIT_SECONDS * (attempt + 1)
             print(f"   [!] Rate limited -- waiting {wait}s before retry ({attempt + 1}/{RATE_LIMIT_MAX_ATTEMPTS})...")
             time.sleep(wait)
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("invoke_with_retry failed: no attempts were made.")
+        except BadRequestError as e:
+            if not _is_tool_use_failed(e):
+                raise  # a real malformed request -- don't mask it with a retry
+            last_error = e
+            if attempt >= TOOL_USE_FAILED_MAX_ATTEMPTS - 1:
+                break
+            print(
+                f"   [!] Model didn't call the required tool (tool_use_failed) -- "
+                f"waiting {TOOL_USE_FAILED_WAIT_SECONDS}s before retry "
+                f"({attempt + 1}/{TOOL_USE_FAILED_MAX_ATTEMPTS})..."
+            )
+            time.sleep(TOOL_USE_FAILED_WAIT_SECONDS)
+    raise last_error
+
+
+
+MAX_DESCRIBE_COLS = int(os.getenv("MAX_DESCRIBE_COLS", 25))
+MAX_COLUMNS_LISTED = int(os.getenv("MAX_COLUMNS_LISTED", 40))
 
 # Must exactly match the step names described in PreprocessingPlan (src/nodes.py)
 # and the node names registered in build_graph() below.
@@ -170,16 +174,7 @@ Dataset profile:
     print(f"   [+] Plan: {plan.steps}")
     print(f"   [+] Reasoning: {plan.reasoning}")
 
-    # --- Resolve the target column ---
-    # There's exactly one source of truth here: state["target_col"], set by
-    # the Streamlit dropdown (or left unset if the user didn't pick one --
-    # deliberately NOT auto-guessed by an LLM; that would be a second,
-    # redundant detection path doing the same job the UI already does).
-    # The raw name is checked against the RAW dataframe's columns (this node
-    # runs before any cleaning), then normalized through the exact same
-    # function data_cleaning_node uses to rename columns -- so the value we
-    # store still matches once the dataframe has actually been cleaned, even
-    # if the casing/spelling the user picked doesn't match post-cleanup.
+    
     raw_target = state.get("target_col")
     target_col = normalize_column_name(raw_target) if raw_target and raw_target in df.columns else None
 
@@ -252,17 +247,29 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
     if target_cols_found:
         # --- Target branch ---
         parts.append(f"Target column(s): {', '.join(target_cols_found)}")
-        parts.append("\nNumeric column statistics (all columns, including engineered features):\n" + numeric_df.describe().to_string())
 
         target_lines = []
+        top_corr_cols = []
         for tcol in target_cols_found:
             if tcol not in numeric_df.columns or numeric_df.shape[1] < 2:
                 continue
             corrs = numeric_df.corr()[tcol].drop(labels=[tcol], errors="ignore").abs().sort_values(ascending=False)
             top = corrs.head(10)
+            top_corr_cols.extend(top.index.tolist())
             if not top.empty:
                 lines = "\n".join(f"  {col}: {v:.2f}" for col, v in top.items())
                 target_lines.append(f"Columns most correlated with '{tcol}' (by |r|):\n{lines}")
+
+        describe_cols = list(dict.fromkeys(list(target_cols_found) + top_corr_cols))[:MAX_DESCRIBE_COLS]
+        stats_df = numeric_df[[c for c in describe_cols if c in numeric_df.columns]]
+        if not stats_df.empty:
+            omitted = numeric_df.shape[1] - stats_df.shape[1]
+            note = f" -- {omitted} other numeric column(s) omitted for brevity" if omitted > 0 else ""
+            parts.append(
+                f"\nNumeric column statistics (target + top correlated columns only{note}):\n"
+                + stats_df.describe().to_string()
+            )
+
         if target_lines:
             parts.append("\n=== TARGET RELATIONSHIPS ===\n" + "\n\n".join(target_lines))
 
@@ -271,9 +278,17 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
         original_numeric_df = numeric_df[[c for c in numeric_df.columns if c not in engineered_columns]]
 
         if not original_numeric_df.empty:
+            
+            describe_df = original_numeric_df
+            omitted_note = ""
+            if describe_df.shape[1] > MAX_DESCRIBE_COLS:
+                top_var_cols = describe_df.var().nlargest(MAX_DESCRIBE_COLS).index.tolist()
+                omitted = describe_df.shape[1] - MAX_DESCRIBE_COLS
+                describe_df = describe_df[top_var_cols]
+                omitted_note = f" -- {omitted} other original numeric column(s) omitted for brevity"
             parts.append(
                 "\nNumeric column statistics (original columns only -- engineered "
-                "features excluded, see note below):\n" + original_numeric_df.describe().to_string()
+                f"features excluded{omitted_note}):\n" + describe_df.describe().to_string()
             )
 
             if original_numeric_df.shape[1] > 1:
@@ -299,10 +314,7 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
                 f"rather than real ones.)"
             )
 
-    # Categorical columns: excluded from engineered filtering isn't needed for
-    # the target branch (kept as-is there), but for general profiling we
-    # exclude engineered categoricals too (e.g. feature_engineering_node's
-    # "_binned" columns, which are pandas Categorical dtype, not numeric).
+    
     cat_df = df.select_dtypes(include=["object", "category", "bool"])
     if not target_cols_found:
         cat_df = cat_df[[c for c in cat_df.columns if c not in engineered_columns]]
@@ -446,11 +458,7 @@ def _timeout_handler(signum, frame):
     raise ChartExecutionTimeout("Chart code took too long to run (possible infinite loop)")
 
 
-# Deliberately small: only what typical matplotlib/seaborn snippets need.
-# Notably absent: __import__, open, eval, exec, compile, getattr, globals,
-# locals, vars -- so generated code CANNOT import a new module, touch the
-# filesystem outside of the one save_path we hand it, or introspect its way
-# around the sandbox.
+
 _SAFE_BUILTINS = {
     name: getattr(builtins, name)
     for name in [
@@ -461,21 +469,175 @@ _SAFE_BUILTINS = {
 }
 _SAFE_BUILTINS.update({"True": True, "False": False, "None": None})
 
+# Module prefixes the plotting stack is allowed to lazily import at runtime.
+_IMPORT_ALLOWLIST = ("numpy", "pandas", "matplotlib", "seaborn", "scipy", "mpl_toolkits")
+
+
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """A deliberately narrow __import__ for the sandbox.
+
+    This exists because leaving __import__ out entirely BREAKS legitimate
+    chart code. numpy defers part of itself: the first `arr.mean()` call
+    triggers an import of `numpy._core._methods`, and that import resolves
+    through the CALLING frame's __builtins__ -- i.e. ours. With no __import__
+    there, a plain `np.array([...]).mean()` dies with KeyError: '__import__'.
+    (That was a live bug in this sandbox before these tests existed; charts
+    using .mean()/.std() failed and got silently retried or dropped.)
+
+    So instead of removing it, we constrain it: only modules under the
+    plotting stack's own namespaces resolve. os, sys, subprocess, importlib,
+    builtins and everything else raise ImportError. Combined with the AST
+    guard -- which rejects `import` statements and the name `__import__`
+    outright -- user code cannot reach this at all; only library internals
+    can, which is exactly who needs it."""
+    root = name.split(".")[0]
+    if root not in _IMPORT_ALLOWLIST:
+        raise ImportError(f"import of '{name}' is not permitted in chart code")
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
+_SAFE_BUILTINS["__import__"] = _guarded_import
+
+
+class UnsafeChartCode(Exception):
+    """Raised when generated chart code fails the static safety check, before
+    it is ever executed. Carries a plain-English reason, which gets fed back
+    to the LLM by the existing self-healing retry loop."""
+
+
+
+_FORBIDDEN_NODES = (
+    ast.Import,
+    ast.ImportFrom,
+    ast.Global,
+    ast.Nonlocal,
+    ast.Lambda,          # a lambda body sidesteps nothing, but nothing needs one either
+    ast.ClassDef,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Await,
+    ast.Yield,
+    ast.YieldFrom,
+)
+
+
+_FORBIDDEN_NAMES = {
+    "eval", "exec", "compile", "open", "input", "breakpoint",
+    "getattr", "setattr", "delattr", "hasattr",
+    "globals", "locals", "vars", "dir",
+    "memoryview", "__import__",
+}
+
+
+def _assert_chart_code_is_safe(code: str):
+    """Static gate that runs BEFORE exec(). Parses the code and rejects
+    anything that could reach outside the plotting sandbox.
+
+    This is the real boundary. It's an allowlist-shaped check on a small,
+    well-understood surface (a plotting snippet), which is exactly the case
+    where static analysis is tractable -- we know what legitimate chart code
+    looks like, and none of it needs dunder attributes or introspection
+    builtins.
+
+    Raises UnsafeChartCode with a specific reason, which the caller feeds
+    back to the LLM as a fix-it message."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        raise UnsafeChartCode(f"code does not parse: {e}") from e
+
+    for node in ast.walk(tree):
+        if isinstance(node, _FORBIDDEN_NODES):
+            raise UnsafeChartCode(
+                f"'{type(node).__name__}' is not allowed in chart code -- write a "
+                f"plain sequence of plotting statements using only df/plt/sns/pd/np/save_path."
+            )
+
+        # Any dunder, in any position, is an escape vector. Reject on sight.
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            raise UnsafeChartCode(
+                f"attribute '{node.attr}' is not allowed (double-underscore attributes "
+                f"can be used to break out of the sandbox)."
+            )
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            raise UnsafeChartCode(f"name '{node.id}' is not allowed.")
+        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_NAMES:
+            raise UnsafeChartCode(f"'{node.id}' is not allowed in chart code.")
+        # A dunder hidden in a string literal is only useful with getattr,
+        # which is already blocked -- but reject it anyway so the intent is
+        # never ambiguous when reviewing logs.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.startswith("__") and node.value.endswith("__"):
+                raise UnsafeChartCode(
+                    f"string literal '{node.value}' looks like a dunder lookup and is not allowed."
+                )
+
+
+def _make_write_jail(charts_dir: str):
+    """Returns a plt proxy whose savefig() can only write inside charts_dir.
+
+    Blocking imports doesn't stop `plt.savefig('/etc/anything')` -- matplotlib
+    is a legitimately-provided object that already holds filesystem access, so
+    the write-anywhere hole survives every builtins restriction. This wraps the
+    one method that writes, resolves the requested path, and refuses anything
+    that lands outside the charts directory (which also covers '..' traversal,
+    because resolve() normalizes it first)."""
+    charts_root = Path(charts_dir).resolve()
+
+    class _JailedPlt:
+        def __getattr__(self, name):
+            # Everything except savefig passes straight through to matplotlib.
+            return getattr(plt, name)
+
+        def savefig(self, fname, *args, **kwargs):
+            try:
+                target = Path(str(fname)).resolve()
+            except Exception as e:
+                raise UnsafeChartCode(f"invalid save path: {fname!r}") from e
+            if not target.is_relative_to(charts_root):
+                raise UnsafeChartCode(
+                    f"chart code tried to write to {target} -- writes are only "
+                    f"permitted inside {charts_root}. Use the provided `save_path`."
+                )
+            return plt.savefig(target, *args, **kwargs)
+
+    return _JailedPlt()
+
 
 def execute_chart_code(code: str, df: pd.DataFrame, save_path: str, timeout_seconds: int = 15):
-    """Runs one chart's LLM-generated code in a restricted exec() sandbox.
+    """Runs one chart's LLM-generated code in a restricted sandbox.
 
-    Only df/plt/sns/pd/np/save_path are reachable -- no import statement can
-    succeed (no __import__ in the builtins), and no other file on disk can be
-    touched (nothing hands the code a real `open`). A SIGALRM-based timeout
-    guards against runaway loops. Any exception -- SyntaxError, NameError,
-    KeyError from a wrong column name, the timeout, whatever -- propagates up
-    to the caller, which is what drives the self-healing retry."""
+    Three layers, in order:
+      1. A static AST check (_assert_chart_code_is_safe) that rejects imports,
+         dunder access and introspection builtins BEFORE anything executes.
+         This is the layer that actually prevents sandbox escape.
+      2. A minimal __builtins__ allowlist, so even if something slipped past
+         layer 1 there is no open/eval to call and imports are restricted to
+         the plotting stack.
+      3. A write jail on plt.savefig, so generated code cannot write outside
+         the charts directory even though matplotlib itself can.
+    A SIGALRM timeout guards against runaway loops.
+
+    Any exception -- UnsafeChartCode, SyntaxError, a KeyError from a wrong
+    column name, the timeout -- propagates to the caller, which is what drives
+    the self-healing retry.
+
+    A note on scope: this is defense against a confused or prompt-injected
+    LLM writing dangerous code, which is the realistic threat here (column
+    names from an uploaded CSV flow into the prompt that generates this code).
+    It is NOT a substitute for OS-level isolation if you ever run genuinely
+    untrusted code -- for that you want a container or gVisor, not an
+    in-process check."""
+
+    _assert_chart_code_is_safe(code)
+
+    # Constrain writes to the directory the chart is meant to go in.
+    charts_dir = os.path.dirname(os.path.abspath(save_path)) or CHARTS_DIR
 
     sandbox_globals = {
         "__builtins__": _SAFE_BUILTINS,
         "df": df,
-        "plt": plt,
+        "plt": _make_write_jail(charts_dir),
         "sns": sns,
         "pd": pd,
         "np": np,
@@ -516,15 +678,7 @@ def visualization_agent_node(state: GraphState):
     for the pipeline to finish)."""
     print("-> Visualization Agent: Planning and generating charts...")
 
-    # .copy() is deliberate: execute_chart_code() hands this exact object to
-    # LLM-generated code as `df`. If a chart's code adds a scratch/helper
-    # column to make plotting easier (e.g. `df['age_Q4'] = ...`), that's a
-    # column ASSIGNMENT, not a reassignment -- it mutates the dataframe
-    # object in place. Without this copy, that mutation lands directly on
-    # state["df"] (same object), so a chart's private plotting helper column
-    # silently leaks into the "final cleaned dataset" everyone downstream
-    # (Synthesis Agent, the Streamlit preview/download) sees -- even though
-    # it was never part of the actual preprocessing pipeline.
+    
     df = state["df"].copy()
     insights = state.get("insights", [])
 
@@ -538,7 +692,17 @@ def visualization_agent_node(state: GraphState):
         for ins in insights
     ) or "No specific insights were provided -- use your judgement on what's worth showing."
 
-    columns_block = ", ".join(f"{col} ({dtype})" for col, dtype in df.dtypes.items())
+    
+    all_columns = list(df.dtypes.items())
+    mentioned = [(col, dtype) for col, dtype in all_columns if str(col) in insights_block]
+    mentioned_names = {col for col, _ in mentioned}
+    remaining = [(col, dtype) for col, dtype in all_columns if col not in mentioned_names]
+    shown_columns = (mentioned + remaining)[:MAX_COLUMNS_LISTED]
+    omitted_count = len(all_columns) - len(shown_columns)
+
+    columns_block = ", ".join(f"{col} ({dtype})" for col, dtype in shown_columns)
+    if omitted_count > 0:
+        columns_block += f", ... and {omitted_count} more column(s) not shown"
 
     prompt = f"""You are a data visualization expert. Propose 2 to 5 charts that best
 illustrate the findings below, using matplotlib/seaborn.
@@ -579,6 +743,34 @@ End every chart's code with exactly:
                 )
                 last_error = None
                 break
+            except UnsafeChartCode as e:
+                # A safety rejection is louder than an ordinary bug: it means
+                # the model emitted code that tried to leave the sandbox. That
+                # can be a confused generation, but it can also be the tail of
+                # a prompt injection carried in a column name from an uploaded
+                # CSV -- so it's logged distinctly rather than blending into
+                # the normal failure stream.
+                last_error = f"SAFETY REJECTION: {e}"
+                print(f"   [!!] Chart '{chart.title}' REJECTED by the safety guard: {e}")
+
+                if attempt < MAX_CHART_FIX_ATTEMPTS:
+                    fix_llm = get_llm(model=AGENT_MODELS["visualization"])
+                    fix_prompt = f"""The code below was REJECTED by a safety check before running.
+
+Reason: {e}
+
+Code:
+{code}
+
+Rewrite it as a plain sequence of plotting statements. You may ONLY use the
+pre-provided variables df, plt, sns, pd, np and save_path. No imports, no
+function or class definitions, no lambdas, no attribute names starting with
+underscores, and no eval/exec/open/getattr. It must end with
+plt.tight_layout(), plt.savefig(save_path), plt.close().
+Return ONLY the corrected Python code."""
+                    fixed = invoke_with_retry(fix_llm, fix_prompt)
+                    code = _strip_code_fences(fixed.content)
+                continue
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
                 print(f"   [!] Chart '{chart.title}' failed on attempt {attempt + 1}: {last_error}")
@@ -724,12 +916,7 @@ def build_graph():
 
 
 if __name__ == "__main__":
-    # Quick manual smoke test:
-    #   python -m src.graph path/to/your.csv [target_column]
-    # target_column is optional -- the raw column name as it appears in the
-    # CSV (e.g. "Churn", not "churn"). If omitted, the Planner will try to
-    # guess a target on its own; if it can't, the pipeline runs in general
-    # profiling mode.
+    
     import sys
 
     if len(sys.argv) < 2:

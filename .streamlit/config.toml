@@ -1,0 +1,10 @@
+[theme]
+primaryColor = "#FF6B35"
+font = "sans serif"
+
+maxUploadSize = 50
+
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false

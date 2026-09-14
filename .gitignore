@@ -35,6 +35,9 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+# The sample dataset is an exception -- it's committed on purpose so the
+# "Try the sample dataset" button works on a fresh clone and on a deploy.
+!data/raw/sample_customer_churn.csv
 
 # =========================
 # 📈 Outputs (EDA Results)
@@ -43,6 +46,11 @@ outputs/figures/*
 outputs/reports/*
 !outputs/figures/.gitkeep
 !outputs/reports/.gitkeep
+# Charts are regenerated on every run -- they're build artifacts, not source.
+# (19 of them were committed before this line existed; `git rm -r --cached
+# charts/` is what actually removes them from tracking.)
+charts/
+report.md
 
 # =========================
 # 🧠 Vector DB (RAG)
@@ -74,7 +82,11 @@ Thumbs.db
 # =========================
 # 🧾 Streamlit (if used)
 # =========================
-.streamlit/
+# Only the secrets file is ignored -- .streamlit/config.toml IS committed so
+# the deployed app renders with the same theme and upload limits as local.
+# (This previously read ".streamlit/", which would have silently dropped
+# config.toml on push and left the deployed app unthemed.)
+.streamlit/secrets.toml
 
 # =========================
 # 🧠 Cache / Temp
