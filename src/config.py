@@ -1,8 +1,34 @@
 import os
+from contextvars import ContextVar
+
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+
+_session_api_key: ContextVar[str | None] = ContextVar("_session_api_key", default=None)
+
+
+def set_session_api_key(key: str | None) -> None:
+    """Scope an API key to the CURRENT session/thread only.
+
+    Call this once per Streamlit script run, before the pipeline starts.
+    Never writes to os.environ -- see the note above for why that leaks
+    keys between concurrent visitors."""
+    _session_api_key.set((key or "").strip() or None)
+
+
+def _resolve_key(*env_names: str) -> str | None:
+    """Session override first, then the environment (.env / host secrets)."""
+    session_key = _session_api_key.get()
+    if session_key:
+        return session_key
+    for name in env_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
 
 
 def get_llm(model: str = None):
@@ -42,7 +68,7 @@ def get_llm(model: str = None):
     if provider == "groq":
         from langchain_groq import ChatGroq
 
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = _resolve_key("GROQ_API_KEY")
         resolved_model = model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
         if not api_key:
@@ -57,7 +83,7 @@ def get_llm(model: str = None):
     if provider == "huggingface":
         from langchain_openai import ChatOpenAI
 
-        api_key = os.getenv("HF_TOKEN")
+        api_key = _resolve_key("HF_TOKEN")
         resolved_model = model or os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 
         if not api_key:
@@ -75,7 +101,7 @@ def get_llm(model: str = None):
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = _resolve_key("OPENAI_API_KEY")
         resolved_model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
         if not api_key:

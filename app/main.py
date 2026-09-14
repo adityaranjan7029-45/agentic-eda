@@ -5,23 +5,13 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# ==========================================
-# 🔧 Make the repo root importable
-# ==========================================
-# app/main.py lives one level below the repo root. Depending on *how*
-# `streamlit run` is launched, the repo root isn't guaranteed to already be
-# on sys.path, and `from src.graph import build_graph` below would fail with
-# ModuleNotFoundError. This makes it work regardless of the working directory
-# the command was run from.
+# Make the repo root importable regardless of where `streamlit run` was launched from.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 SAMPLE_CSV = REPO_ROOT / "data" / "raw" / "sample_customer_churn.csv"
 
-# ==========================================
-# ⚙️ Page configuration
-# ==========================================
 st.set_page_config(
     page_title="Agentic EDA",
     page_icon="⚡",
@@ -29,20 +19,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ==========================================
-# 🎨 Theme
-# ==========================================
-# IMPORTANT: this deliberately does NOT use @media (prefers-color-scheme: dark)
-# to pick text colors. Streamlit's active theme and the visitor's OS theme are
-# INDEPENDENT -- a visitor whose OS is dark can still be viewing the app in
-# Streamlit's light theme. Keying colors off the OS preference produced exactly
-# that failure: white body text painted onto a white Streamlit background,
-# leaving the hero subtitle and card text invisible.
-#
-# Instead everything derives from `currentColor` (the active Streamlit theme's
-# own text color) via color-mix, so borders, surfaces and muted text always
-# track whatever theme is actually applied. The only hardcoded colors are the
-# orange accents, which are legible on both light and dark backgrounds.
+# Colors derive from `currentColor` (the active Streamlit theme's text color), NOT
+# from prefers-color-scheme -- Streamlit's theme and the OS theme are independent,
+# and keying off the OS one paints white text on a white background.
 st.markdown(
     """
 <style>
@@ -57,11 +36,8 @@ st.markdown(
        enough that the hero gets pushed below the fold on a laptop. */
     .block-container { padding-top: 2.5rem; max-width: 1180px; }
 
-    /* ---------- Hero ----------
-       The `[data-testid="stMarkdownContainer"]` prefix is not decorative:
-       Streamlit ships `[data-testid="stMarkdownContainer"] p { font-size: ... }`,
-       which outranks a bare `.hero-title` class on specificity and silently
-       reverts the heading to body size. Matching its specificity fixes that. */
+    /* Hero. The [data-testid] prefix is needed: Streamlit's own `p` rule
+       outranks a bare class and reverts the heading to body size. */
     [data-testid="stMarkdownContainer"] p.hero-title {
         font-size: clamp(2.1rem, 4.6vw, 3rem);
         font-weight: 800;
@@ -127,8 +103,7 @@ st.markdown(
         transform: translateY(-1px);
         box-shadow: 0 6px 18px rgba(255, 107, 53, 0.32);
     }
-    /* Without this the disabled Run button keeps the full-strength gradient
-       and reads as clickable -- the exact opposite of what disabled means. */
+    /* Disabled Run button must not keep the full-strength gradient. */
     .stButton > button[kind="primary"]:disabled {
         background: color-mix(in srgb, currentColor 12%, transparent);
         color: color-mix(in srgb, currentColor 45%, transparent);
@@ -153,9 +128,7 @@ st.markdown(
         font-weight: 550;
     }
 
-    /* Hide the default Streamlit chrome for a cleaner deployed look. The
-       Deploy button has its own testid and is NOT covered by #MainMenu --
-       it stays visible in the top-right on a deployed app without this. */
+    /* Hide default Streamlit chrome. The Deploy button needs its own rule. */
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
     [data-testid="stAppDeployButton"] { display: none; }
@@ -165,23 +138,10 @@ st.markdown(
 )
 
 
-# ==========================================
-# 🔑 API key resolution
-# ==========================================
-# Two sources, in priority order:
-#   1. A key the visitor typed into the sidebar (session-only, never written
-#      to disk, never logged) -- lets someone use their own quota instead of
-#      the deployer's.
-#   2. The deployer's own key, from st.secrets (Streamlit Cloud / HF Spaces)
-#      or a local .env -- so the app works out of the box for casual visitors.
-#
-# Whichever wins gets pushed into os.environ, because src/config.py reads
-# GROQ_API_KEY from the environment and is deliberately Streamlit-agnostic
-# (it also has to work from `python -m src.graph`).
+# API key: visitor's own (sidebar) wins, else the deployer's (st.secrets / .env).
 def _secret(name: str):
-    """Reads from st.secrets if a secrets file exists, else falls back to the
-    environment. Wrapped in try/except because accessing st.secrets when no
-    secrets.toml is present raises rather than returning None."""
+    """st.secrets if present, else env. try/except because st.secrets raises
+    when no secrets.toml exists."""
     try:
         if name in st.secrets:
             return st.secrets[name]
@@ -194,23 +154,17 @@ OWNER_KEY = _secret("GROQ_API_KEY")
 
 
 def resolve_api_key(user_key: str):
-    """User-supplied key wins; otherwise fall back to the deployer's."""
+    """Scope the key to THIS session only. Never os.environ -- that's process-global
+    and would leak one visitor's key into another's run (see src/config.py)."""
+    from src.config import set_session_api_key
+
     key = (user_key or "").strip() or OWNER_KEY
-    if key:
-        os.environ["GROQ_API_KEY"] = key
+    set_session_api_key(key)
     return key
 
 
-# ==========================================
-# 🧠 Cached graph + friendly per-node status text
-# ==========================================
-# st.cache_resource means build_graph() (which compiles the whole StateGraph)
-# only runs once per server process, not on every single Streamlit rerun
-# (Streamlit reruns this entire script top-to-bottom on every interaction).
-#
-# The import lives inside the function rather than at module level so the page
-# still renders (and can show a helpful error) if a heavy dependency is missing
-# on a fresh deploy, instead of dying with a blank screen on import.
+# cache_resource: compile the StateGraph once per process, not per rerun.
+# Import inside the function so a missing dep shows an error, not a blank page.
 @st.cache_resource
 def get_graph():
     from src.graph import build_graph
@@ -243,9 +197,7 @@ NODE_MESSAGES = {
 
 AGENTS = ["Planner", "Insight", "Visualization", "Synthesis", "Critic"]
 
-# ==========================================
-# 🗄️ Sidebar
-# ==========================================
+# ---------- Sidebar ----------
 with st.sidebar:
     st.markdown("### 🔑 Groq API key")
 
@@ -290,9 +242,7 @@ with st.sidebar:
         "summarized to fit — raise `MAX_DESCRIBE_COLS` on a paid tier."
     )
 
-# ==========================================
-# 🎬 Hero
-# ==========================================
+# ---------- Hero ----------
 st.markdown('<p class="hero-title">Agentic EDA</p>', unsafe_allow_html=True)
 st.markdown(
     '<p class="hero-sub">Drop in a raw CSV. Five specialized agents plan the preprocessing, '
@@ -310,9 +260,7 @@ st.markdown(
 
 st.write("")
 
-# ==========================================
-# 📂 Input
-# ==========================================
+# ---------- Input ----------
 if "df" not in st.session_state:
     st.session_state.df = None
     st.session_state.source_name = None
@@ -330,10 +278,7 @@ with sample_col:
         st.session_state.pop("result", None)
     st.caption("Customer churn CSV with deliberate missing values.")
 
-# Be explicit about what leaves the machine. The pipeline sends column names,
-# dtypes, summary statistics AND a handful of literal sample rows to Groq's
-# API -- someone uploading real customer or medical data deserves to know that
-# before they click run, not after.
+# The pipeline sends column names, stats and sample rows to Groq -- say so up front.
 st.caption(
     "🔒 **Your data leaves this app.** Column names, summary statistics and a few "
     "sample rows are sent to Groq's API to generate the analysis. Don't upload "
@@ -342,7 +287,7 @@ st.caption(
 )
 
 if uploaded_file is not None:
-    # Persist the upload so a rerun doesn't lose it.
+    # Persist so a rerun doesn't lose it.
     raw_dir = REPO_ROOT / "data" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     file_path = raw_dir / uploaded_file.name
@@ -360,9 +305,7 @@ if uploaded_file is not None:
 
 df = st.session_state.df
 
-# ==========================================
-# 🫙 Empty state
-# ==========================================
+# ---------- Empty state ----------
 if df is None:
     st.markdown(
         """
@@ -421,9 +364,7 @@ anything executes, a restricted builtins table, and a write jail that confines
         )
     st.stop()
 
-# ==========================================
-# 📋 Dataset summary + target selection
-# ==========================================
+# ---------- Dataset summary + target ----------
 st.success(f"Loaded **{st.session_state.source_name}**")
 
 m1, m2, m3, m4 = st.columns(4)
@@ -457,9 +398,7 @@ run_clicked = st.button(
 if not active_key:
     st.warning("Add a Groq API key in the sidebar to run the pipeline.")
 
-# ==========================================
-# 🚀 Run
-# ==========================================
+# ---------- Run ----------
 if run_clicked:
     graph = get_graph()
     initial_state = {"df": df}
@@ -471,9 +410,8 @@ if run_clicked:
 
     with st.status("Running the pipeline…", expanded=True) as status:
         try:
-            # graph.stream() yields one dict per node as it finishes, e.g.
-            # {"planner": {...}} -- this is what lets the UI show REAL progress
-            # instead of a fixed sequence of sleeps.
+            # graph.stream() yields one dict per node as it finishes -- real
+            # progress, not a fixed sequence of sleeps.
             for step_output in graph.stream(initial_state):
                 for node_name, node_result in step_output.items():
                     final_state.update(node_result)
@@ -486,9 +424,8 @@ if run_clicked:
 
     if pipeline_error is not None:
         st.session_state.pop("result", None)
+        # Map the failure modes people actually hit to specific advice.
         msg = str(pipeline_error).lower()
-        # Map the failure modes people actually hit to specific, actionable
-        # advice rather than one generic "something went wrong".
         if "rate_limit" in msg or "request too large" in msg or "413" in msg:
             st.error(
                 "**Groq rate limit hit.** The free tier allows 8,000 tokens/minute. "
@@ -509,9 +446,7 @@ if run_clicked:
     else:
         st.session_state.result = final_state
 
-# ==========================================
-# 📑 Results
-# ==========================================
+# ---------- Results ----------
 result = st.session_state.get("result")
 if result:
     report_md = result.get("report_markdown", "")
