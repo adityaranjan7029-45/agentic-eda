@@ -34,6 +34,7 @@ from src.nodes import (
 )
 from src.schemas import InsightReport, VisualizationPlan, CriticVerdict
 
+
 AGENT_MODELS = {
     "planner": "openai/gpt-oss-20b",
     "insight": "openai/gpt-oss-120b",
@@ -41,7 +42,6 @@ AGENT_MODELS = {
     "visualization": "openai/gpt-oss-120b",
     "critic": "openai/gpt-oss-120b",
 }
-
 
 CHARTS_DIR = os.getenv(
     "CHARTS_DIR",
@@ -56,7 +56,7 @@ RATE_LIMIT_BASE_WAIT_SECONDS = 15  # attempt 1 waits 15s, attempt 2 waits 30s, a
 
 
 TOOL_USE_FAILED_MAX_ATTEMPTS = 3
-TOOL_USE_FAILED_WAIT_SECONDS = 3  # short and fixed -- this isn't a rate-limit bucket refilling, just a reroll
+TOOL_USE_FAILED_WAIT_SECONDS = 3  # short and fixed -- just a reroll, not a rate-limit window
 
 
 def _is_tool_use_failed(e: BadRequestError) -> bool:
@@ -66,15 +66,7 @@ def _is_tool_use_failed(e: BadRequestError) -> bool:
 
 
 def invoke_with_retry(runnable, prompt):
-    """Wraps a .invoke() call (on either a plain LLM or a
-    with_structured_output-wrapped one) with a real wait-and-retry loop
-    covering two distinct Groq failure modes: RateLimitError (HTTP 429) and
-    the "tool_use_failed" flavor of BadRequestError (HTTP 400) described
-    above. One flat attempt loop handles both -- each attempt either
-    succeeds, hits a retryable error (and sleeps an amount appropriate to
-    THAT error type before the next attempt), or hits a non-retryable error
-    and raises immediately. Every direct LLM call in this file goes through
-    this instead of calling .invoke() directly."""
+    """Retries a .invoke() call through both RateLimitError and tool_use_failed. Every direct LLM call in this file goes through this."""
     max_attempts = max(RATE_LIMIT_MAX_ATTEMPTS, TOOL_USE_FAILED_MAX_ATTEMPTS)
     last_error: Exception = RuntimeError("invoke_with_retry failed")
     for attempt in range(max_attempts):
@@ -106,8 +98,7 @@ def invoke_with_retry(runnable, prompt):
 MAX_DESCRIBE_COLS = int(os.getenv("MAX_DESCRIBE_COLS", 25))
 MAX_COLUMNS_LISTED = int(os.getenv("MAX_COLUMNS_LISTED", 40))
 
-# Must exactly match the step names described in PreprocessingPlan (src/nodes.py)
-# and the node names registered in build_graph() below.
+
 VALID_STEPS = [
     "data_cleaning",
     "type_conversion",
@@ -123,9 +114,7 @@ VALID_STEPS = [
 
 
 def build_profile(df: pd.DataFrame) -> str:
-    """Builds the same style of profile string profile_dataframe() produces,
-    but reads directly off the graph state's df instead of the module-level
-    global used by the @tool version in nodes.py."""
+    """Same style of profile as profile_dataframe(), but reads the graph state's df directly."""
     buffer = io.StringIO()
     df.info(buf=buffer)
     info_str = buffer.getvalue()
@@ -141,8 +130,7 @@ def build_profile(df: pd.DataFrame) -> str:
 
 
 def planner_node(state: GraphState):
-    """The one LLM call in this graph. Looks at the dataset profile and
-    decides which of VALID_STEPS apply, and in what order."""
+    """The one planning LLM call: decides which of VALID_STEPS apply, and in what order."""
     print("-> Planner Agent: Analyzing dataset and drafting plan...")
 
     df = state["df"]
@@ -167,14 +155,15 @@ Dataset profile:
 
     plan = invoke_with_retry(structured_llm, prompt)
 
-    # Safety net: silently drop any step name the LLM invents that isn't in
-    # our fixed vocabulary, so a hallucinated step can't crash the router.
+    # Silently drop any hallucinated step name outside our fixed vocabulary.
     plan.steps = [s for s in plan.steps if s in VALID_STEPS]
 
     print(f"   [+] Plan: {plan.steps}")
     print(f"   [+] Reasoning: {plan.reasoning}")
 
-    
+    # Target column comes only from state["target_col"] (the Streamlit
+    # dropdown), checked against the raw columns then normalized so it still
+    # matches after cleaning.
     raw_target = state.get("target_col")
     target_col = normalize_column_name(raw_target) if raw_target and raw_target in df.columns else None
 
@@ -183,21 +172,12 @@ Dataset profile:
     else:
         print("   [+] No target column selected -- running in general profiling mode.")
 
-    # Freeze a copy of the chosen steps now, before any node starts popping
-    # them off plan.steps -- otherwise by the time the Synthesis Agent runs,
-    # plan.steps is empty and we've lost the record of what actually happened.
+    # Freeze the chosen steps now, before nodes start popping them off plan.steps.
     return {"plan": plan, "steps_taken": list(plan.steps), "target_col": target_col}
 
 
 def _find_target_columns(df: pd.DataFrame, target_col: str):
-    """Resolves target_col against the ACTUAL columns present in the (fully
-    preprocessed) dataframe. Usually this is a simple exact match, but
-    encoding_node can rename a target column if it didn't cleanly convert to
-    boolean earlier (e.g. one-hot encoding "churn" with unusual text values
-    into "churn_active"/"churn_cancelled" instead of leaving one "churn"
-    column behind). This looks for that case too -- any column starting with
-    "{target_col}_" -- so a renamed target still gets found instead of
-    silently falling back to no-target mode."""
+    """Resolves target_col against the actual (preprocessed) columns, including a one-hot-renamed variant like 'churn_active'."""
     if not target_col:
         return []
     if target_col in df.columns:
@@ -207,30 +187,7 @@ def _find_target_columns(df: pd.DataFrame, target_col: str):
 
 
 def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_columns: list = None) -> str:
-    """Builds a statistical picture of the CLEANED dataframe for the Insight
-    Agent. This is deliberately separate from build_profile() (which the
-    Planner uses on the raw data) because the Insight Agent needs to reason
-    about actual patterns, not just dtypes and nulls.
-
-    Two distinct branches, matching how a target column changes what's
-    actually worth showing:
-
-    - TARGET BRANCH (a target column was selected and survived preprocessing):
-      compute that column's correlation against every other numeric column --
-      including engineered ones, since e.g. "this engineered ratio predicts
-      churn" is a genuinely useful thing to know when there IS a specific
-      outcome being explained.
-
-    - GENERAL PROFILING BRANCH (no target): deliberately restrict summary
-      stats and correlations to ORIGINAL columns only, excluding anything
-      feature_engineering_node generated. Without a target to focus the
-      search, correlating dozens of automatically engineered ratio/bin/
-      cyclical columns against EACH OTHER is exactly the multiple-comparisons
-      trap that produced spurious "insights" (e.g. a coincidental 0.87
-      correlation between two unrelated engineered columns) in earlier runs.
-      Excluding them here means that noise is never even offered to the LLM
-      as a candidate insight, rather than relying on the LLM to correctly
-      dismiss it."""
+    """Statistical picture of the cleaned dataframe for the Insight Agent -- correlated-with-target if a target exists, otherwise original columns only (engineered columns excluded to avoid multiple-comparisons noise)."""
     engineered_columns = set(engineered_columns or [])
     parts = [f"Dataset shape: {df.shape[0]} rows, {df.shape[1]} columns"]
 
@@ -248,6 +205,8 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
         # --- Target branch ---
         parts.append(f"Target column(s): {', '.join(target_cols_found)}")
 
+        # Cap describe() to the target plus its top-correlated columns, not
+        # every numeric column, to stay under Groq's token budget.
         target_lines = []
         top_corr_cols = []
         for tcol in target_cols_found:
@@ -278,7 +237,7 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
         original_numeric_df = numeric_df[[c for c in numeric_df.columns if c not in engineered_columns]]
 
         if not original_numeric_df.empty:
-            
+            # Same token-budget cap, prioritizing highest-variance columns.
             describe_df = original_numeric_df
             omitted_note = ""
             if describe_df.shape[1] > MAX_DESCRIBE_COLS:
@@ -314,14 +273,13 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
                 f"rather than real ones.)"
             )
 
-    
+    # Categorical columns: for general profiling, exclude engineered ones too.
     cat_df = df.select_dtypes(include=["object", "category", "bool"])
     if not target_cols_found:
         cat_df = cat_df[[c for c in cat_df.columns if c not in engineered_columns]]
     if not cat_df.empty:
-        # Cap at 15 columns so a very wide dataset doesn't blow up the prompt.
         cat_lines = []
-        for col in cat_df.columns[:15]:
+        for col in cat_df.columns[:15]:  # cap at 15 for very wide datasets
             top_vals = df[col].value_counts().head(5).to_dict()
             cat_lines.append(f"  {col}: {top_vals}")
         parts.append("\nTop values per categorical column:\n" + "\n".join(cat_lines))
@@ -330,10 +288,7 @@ def build_insight_context(df: pd.DataFrame, target_col: str = None, engineered_c
 
 
 def insight_agent_node(state: GraphState):
-    """Second LLM call in the graph. Runs AFTER preprocessing is done, on the
-    cleaned dataframe. Decides what's actually worth reporting -- not every
-    statistic, just the ones that matter -- and returns them as structured
-    Insight objects (converted to plain dicts for state portability)."""
+    """Runs on the cleaned dataframe. Decides what's worth reporting and returns Insight objects as plain dicts."""
     print("-> Insight Agent: Analyzing cleaned data for noteworthy patterns...")
 
     df = state["df"]
@@ -366,9 +321,6 @@ Context:
 
     report = invoke_with_retry(structured_llm, prompt)
 
-    # Sort strongest-first and store as plain dicts (Pydantic objects don't
-    # need to survive in LangGraph state -- dicts are simpler to serialize
-    # and to hand to the Synthesis Agent later).
     insights = sorted(
         [i.model_dump() for i in report.insights],
         key=lambda i: i["importance"],
@@ -383,14 +335,7 @@ Context:
 
 
 def synthesis_agent_node(state: GraphState):
-    """Third LLM call in the graph. Runs AFTER the Insight Agent. Takes the
-    structured insights it found and the record of what preprocessing was
-    done, and writes them up as one polished Markdown report.
-
-    Deliberately NOT using with_structured_output here (unlike the Planner
-    and Insight agents): the output we want is flowing prose/Markdown, and
-    forcing that into fixed schema fields would just mean reassembling
-    Markdown out of pieces afterwards -- more awkward, no real benefit."""
+    """Writes the insights and preprocessing record up as one Markdown report. Plain LLM call, not structured output, since the goal is flowing prose."""
     print("-> Synthesis Agent: Compiling final report...")
 
     df = state["df"]
@@ -412,8 +357,6 @@ def synthesis_agent_node(state: GraphState):
 
     charts_block = "\n".join(f"- {c['title']} ({c['path']}): {c['rationale']}" for c in charts) or "No charts were generated."
 
-    # On a revision (the Critic sent this back), tell the LLM exactly what to fix.
-    # On a first draft, this is just empty.
     revision_block = (
         f"\n\nIMPORTANT -- a previous draft of this report was reviewed and REJECTED. "
         f"You must specifically address this feedback in your rewrite: {critic_feedback}"
@@ -450,14 +393,11 @@ Do not invent any numbers, columns, or findings that aren't given above.{revisio
 
 
 class ChartExecutionTimeout(Exception):
-    """Raised when generated chart code runs too long -- catches infinite
-    loops or accidentally-huge plotting operations."""
+    """Raised when generated chart code runs too long (possible infinite loop)."""
 
 
 def _timeout_handler(signum, frame):
     raise ChartExecutionTimeout("Chart code took too long to run (possible infinite loop)")
-
-
 
 _SAFE_BUILTINS = {
     name: getattr(builtins, name)
@@ -474,22 +414,7 @@ _IMPORT_ALLOWLIST = ("numpy", "pandas", "matplotlib", "seaborn", "scipy", "mpl_t
 
 
 def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-    """A deliberately narrow __import__ for the sandbox.
-
-    This exists because leaving __import__ out entirely BREAKS legitimate
-    chart code. numpy defers part of itself: the first `arr.mean()` call
-    triggers an import of `numpy._core._methods`, and that import resolves
-    through the CALLING frame's __builtins__ -- i.e. ours. With no __import__
-    there, a plain `np.array([...]).mean()` dies with KeyError: '__import__'.
-    (That was a live bug in this sandbox before these tests existed; charts
-    using .mean()/.std() failed and got silently retried or dropped.)
-
-    So instead of removing it, we constrain it: only modules under the
-    plotting stack's own namespaces resolve. os, sys, subprocess, importlib,
-    builtins and everything else raise ImportError. Combined with the AST
-    guard -- which rejects `import` statements and the name `__import__`
-    outright -- user code cannot reach this at all; only library internals
-    can, which is exactly who needs it."""
+    """Narrow __import__ for the sandbox -- only the plotting stack's own namespaces resolve (numpy needs this for its lazy internal imports); os/sys/subprocess/etc raise ImportError."""
     root = name.split(".")[0]
     if root not in _IMPORT_ALLOWLIST:
         raise ImportError(f"import of '{name}' is not permitted in chart code")
@@ -500,18 +425,16 @@ _SAFE_BUILTINS["__import__"] = _guarded_import
 
 
 class UnsafeChartCode(Exception):
-    """Raised when generated chart code fails the static safety check, before
-    it is ever executed. Carries a plain-English reason, which gets fed back
-    to the LLM by the existing self-healing retry loop."""
+    """Raised when generated chart code fails the static safety check, before execution. Fed back to the LLM by the self-healing retry loop."""
 
 
-
+# Node types with no legitimate place in a self-contained plotting snippet.
 _FORBIDDEN_NODES = (
     ast.Import,
     ast.ImportFrom,
     ast.Global,
     ast.Nonlocal,
-    ast.Lambda,          # a lambda body sidesteps nothing, but nothing needs one either
+    ast.Lambda,
     ast.ClassDef,
     ast.FunctionDef,
     ast.AsyncFunctionDef,
@@ -520,7 +443,8 @@ _FORBIDDEN_NODES = (
     ast.YieldFrom,
 )
 
-
+# Any dunder is rejected wholesale (not individually blocklisted) since the
+# escape chains are open-ended (__class__, __bases__, __subclasses__, ...).
 _FORBIDDEN_NAMES = {
     "eval", "exec", "compile", "open", "input", "breakpoint",
     "getattr", "setattr", "delattr", "hasattr",
@@ -530,17 +454,7 @@ _FORBIDDEN_NAMES = {
 
 
 def _assert_chart_code_is_safe(code: str):
-    """Static gate that runs BEFORE exec(). Parses the code and rejects
-    anything that could reach outside the plotting sandbox.
-
-    This is the real boundary. It's an allowlist-shaped check on a small,
-    well-understood surface (a plotting snippet), which is exactly the case
-    where static analysis is tractable -- we know what legitimate chart code
-    looks like, and none of it needs dunder attributes or introspection
-    builtins.
-
-    Raises UnsafeChartCode with a specific reason, which the caller feeds
-    back to the LLM as a fix-it message."""
+    """Static AST gate that runs before exec() -- the real sandbox boundary. Raises UnsafeChartCode with a specific reason, fed back to the LLM as a fix-it message."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -553,7 +467,6 @@ def _assert_chart_code_is_safe(code: str):
                 f"plain sequence of plotting statements using only df/plt/sns/pd/np/save_path."
             )
 
-        # Any dunder, in any position, is an escape vector. Reject on sight.
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             raise UnsafeChartCode(
                 f"attribute '{node.attr}' is not allowed (double-underscore attributes "
@@ -563,9 +476,6 @@ def _assert_chart_code_is_safe(code: str):
             raise UnsafeChartCode(f"name '{node.id}' is not allowed.")
         if isinstance(node, ast.Name) and node.id in _FORBIDDEN_NAMES:
             raise UnsafeChartCode(f"'{node.id}' is not allowed in chart code.")
-        # A dunder hidden in a string literal is only useful with getattr,
-        # which is already blocked -- but reject it anyway so the intent is
-        # never ambiguous when reviewing logs.
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if node.value.startswith("__") and node.value.endswith("__"):
                 raise UnsafeChartCode(
@@ -574,20 +484,12 @@ def _assert_chart_code_is_safe(code: str):
 
 
 def _make_write_jail(charts_dir: str):
-    """Returns a plt proxy whose savefig() can only write inside charts_dir.
-
-    Blocking imports doesn't stop `plt.savefig('/etc/anything')` -- matplotlib
-    is a legitimately-provided object that already holds filesystem access, so
-    the write-anywhere hole survives every builtins restriction. This wraps the
-    one method that writes, resolves the requested path, and refuses anything
-    that lands outside the charts directory (which also covers '..' traversal,
-    because resolve() normalizes it first)."""
+    """Returns a plt proxy whose savefig() can only write inside charts_dir -- matplotlib already has filesystem access, so this is the layer that actually stops path traversal / arbitrary writes."""
     charts_root = Path(charts_dir).resolve()
 
     class _JailedPlt:
         def __getattr__(self, name):
-            # Everything except savefig passes straight through to matplotlib.
-            return getattr(plt, name)
+            return getattr(plt, name)  # everything except savefig passes straight through
 
         def savefig(self, fname, *args, **kwargs):
             try:
@@ -605,33 +507,10 @@ def _make_write_jail(charts_dir: str):
 
 
 def execute_chart_code(code: str, df: pd.DataFrame, save_path: str, timeout_seconds: int = 15):
-    """Runs one chart's LLM-generated code in a restricted sandbox.
-
-    Three layers, in order:
-      1. A static AST check (_assert_chart_code_is_safe) that rejects imports,
-         dunder access and introspection builtins BEFORE anything executes.
-         This is the layer that actually prevents sandbox escape.
-      2. A minimal __builtins__ allowlist, so even if something slipped past
-         layer 1 there is no open/eval to call and imports are restricted to
-         the plotting stack.
-      3. A write jail on plt.savefig, so generated code cannot write outside
-         the charts directory even though matplotlib itself can.
-    A SIGALRM timeout guards against runaway loops.
-
-    Any exception -- UnsafeChartCode, SyntaxError, a KeyError from a wrong
-    column name, the timeout -- propagates to the caller, which is what drives
-    the self-healing retry.
-
-    A note on scope: this is defense against a confused or prompt-injected
-    LLM writing dangerous code, which is the realistic threat here (column
-    names from an uploaded CSV flow into the prompt that generates this code).
-    It is NOT a substitute for OS-level isolation if you ever run genuinely
-    untrusted code -- for that you want a container or gVisor, not an
-    in-process check."""
+    """Runs one chart's LLM-generated code in a restricted sandbox: AST safety check, minimal builtins, a savefig write jail, and a SIGALRM timeout. Any exception propagates to drive the self-healing retry. Defense against a confused/prompt-injected LLM, not OS-level isolation."""
 
     _assert_chart_code_is_safe(code)
 
-    # Constrain writes to the directory the chart is meant to go in.
     charts_dir = os.path.dirname(os.path.abspath(save_path)) or CHARTS_DIR
 
     sandbox_globals = {
@@ -658,8 +537,7 @@ def execute_chart_code(code: str, df: pd.DataFrame, save_path: str, timeout_seco
 
 
 def _strip_code_fences(text: str) -> str:
-    """LLMs love wrapping code in ```python ... ``` even when told not to.
-    Strips that off so exec() gets plain Python."""
+    """Strips ```python ... ``` wrapping so exec() gets plain Python."""
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
@@ -667,15 +545,37 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+# Punctuation matplotlib's default font can't always render (falls back to a
+# tofu box, e.g. "Fiber-Optic" -> "Fiber□Optic"). Normalizing to plain ASCII
+# is lossless for display purposes.
+_UNICODE_PUNCTUATION_MAP = {
+    "‐": "-",   # hyphen
+    "‑": "-",   # non-breaking hyphen
+    "‒": "-",   # figure dash
+    "–": "-",   # en dash
+    "—": "-",   # em dash
+    "―": "-",   # horizontal bar
+    "‘": "'",   # left single quote
+    "’": "'",   # right single quote
+    "“": '"',   # left double quote
+    "”": '"',   # right double quote
+    "…": "...", # ellipsis
+    " ": " ",   # non-breaking space
+    "−": "-",   # minus sign
+}
+
+
+def _normalize_unicode_punctuation(text: str) -> str:
+    """Replaces punctuation that commonly renders as a missing-glyph box in matplotlib's default font with a plain-ASCII equivalent."""
+    if not text:
+        return text
+    for bad, good in _UNICODE_PUNCTUATION_MAP.items():
+        text = text.replace(bad, good)
+    return text
+
+
 def visualization_agent_node(state: GraphState):
-    """Fourth LLM call in the graph, and the only node in the whole pipeline
-    where LLM-written code actually executes. Runs after the Insight Agent:
-    decides which charts best show off the findings, writes the matplotlib/
-    seaborn code for each, and runs it in the sandbox above. If a chart's
-    code throws, the real error is sent back to the LLM to fix -- up to
-    MAX_CHART_FIX_ATTEMPTS times -- before that one chart is skipped
-    (skipping never crashes the graph; charts are a bonus, not a requirement
-    for the pipeline to finish)."""
+    """Decides which charts to draw, writes matplotlib/seaborn code for each, and runs it in the sandbox above. A chart's code that throws gets the real error fed back to the LLM to fix, up to MAX_CHART_FIX_ATTEMPTS, before being skipped."""
     print("-> Visualization Agent: Planning and generating charts...")
 
     
@@ -692,7 +592,7 @@ def visualization_agent_node(state: GraphState):
         for ins in insights
     ) or "No specific insights were provided -- use your judgement on what's worth showing."
 
-    
+   
     all_columns = list(df.dtypes.items())
     mentioned = [(col, dtype) for col, dtype in all_columns if str(col) in insights_block]
     mentioned_names = {col for col, _ in mentioned}
@@ -731,27 +631,25 @@ End every chart's code with exactly:
             safe_name += ".png"
         save_path = os.path.join(CHARTS_DIR, safe_name)
 
-        code = _strip_code_fences(chart.code)
+        code = _normalize_unicode_punctuation(_strip_code_fences(chart.code))
+        chart_title = _normalize_unicode_punctuation(chart.title)
+        chart_rationale = _normalize_unicode_punctuation(chart.rationale)
         last_error = None
 
         for attempt in range(MAX_CHART_FIX_ATTEMPTS + 1):
             try:
                 execute_chart_code(code, df, save_path)
-                print(f"   [+] Saved chart: {save_path} ({chart.title})")
+                print(f"   [+] Saved chart: {save_path} ({chart_title})")
                 generated_charts.append(
-                    {"title": chart.title, "rationale": chart.rationale, "path": save_path}
+                    {"title": chart_title, "rationale": chart_rationale, "path": save_path}
                 )
                 last_error = None
                 break
             except UnsafeChartCode as e:
-                # A safety rejection is louder than an ordinary bug: it means
-                # the model emitted code that tried to leave the sandbox. That
-                # can be a confused generation, but it can also be the tail of
-                # a prompt injection carried in a column name from an uploaded
-                # CSV -- so it's logged distinctly rather than blending into
-                # the normal failure stream.
+                # Logged distinctly from ordinary failures: could be a
+                # confused generation, or a prompt injection via a CSV column name.
                 last_error = f"SAFETY REJECTION: {e}"
-                print(f"   [!!] Chart '{chart.title}' REJECTED by the safety guard: {e}")
+                print(f"   [!!] Chart '{chart_title}' REJECTED by the safety guard: {e}")
 
                 if attempt < MAX_CHART_FIX_ATTEMPTS:
                     fix_llm = get_llm(model=AGENT_MODELS["visualization"])
@@ -769,15 +667,13 @@ underscores, and no eval/exec/open/getattr. It must end with
 plt.tight_layout(), plt.savefig(save_path), plt.close().
 Return ONLY the corrected Python code."""
                     fixed = invoke_with_retry(fix_llm, fix_prompt)
-                    code = _strip_code_fences(fixed.content)
+                    code = _normalize_unicode_punctuation(_strip_code_fences(fixed.content))
                 continue
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
-                print(f"   [!] Chart '{chart.title}' failed on attempt {attempt + 1}: {last_error}")
+                print(f"   [!] Chart '{chart_title}' failed on attempt {attempt + 1}: {last_error}")
 
                 if attempt < MAX_CHART_FIX_ATTEMPTS:
-                    # Self-healing loop, scoped to just this one chart's code --
-                    # the real traceback goes back to the LLM to fix.
                     fix_llm = get_llm(model=AGENT_MODELS["visualization"])
                     fix_prompt = f"""This matplotlib/seaborn code failed with this error:
 {last_error}
@@ -789,10 +685,10 @@ Rewrite ONLY the code to fix the error. Same rules as before: only use
 df/plt/sns/pd/np/save_path, no imports, must end with plt.tight_layout(),
 plt.savefig(save_path), plt.close(). Return ONLY the corrected Python code."""
                     fixed = invoke_with_retry(fix_llm, fix_prompt)
-                    code = _strip_code_fences(fixed.content)
+                    code = _normalize_unicode_punctuation(_strip_code_fences(fixed.content))
 
         if last_error is not None:
-            print(f"   [x] Giving up on chart '{chart.title}' after {MAX_CHART_FIX_ATTEMPTS + 1} attempts.")
+            print(f"   [x] Giving up on chart '{chart_title}' after {MAX_CHART_FIX_ATTEMPTS + 1} attempts.")
 
     print(f"   [+] {len(generated_charts)}/{len(plan.charts)} charts generated successfully.")
 
@@ -800,12 +696,7 @@ plt.savefig(save_path), plt.close(). Return ONLY the corrected Python code."""
 
 
 def critic_agent_node(state: GraphState):
-    """Fifth LLM call in the graph. Runs after Synthesis. Reviews the final
-    report against the actual insights it's supposed to be based on, and can
-    reject it -- sending the graph back to Synthesis with concrete feedback.
-    This is the pipeline's real self-healing/reflection step: instead of
-    catching a code traceback, it catches a REASONING failure (a report that
-    invents numbers, or is too vague to be useful)."""
+    """Reviews the final report against the actual insights, and can reject it -- sending the graph back to Synthesis with concrete feedback. Catches reasoning failures (invented numbers, vague filler), not code errors."""
     print("-> Critic Agent: Reviewing final report...")
 
     report = state.get("report_markdown", "")
@@ -845,11 +736,7 @@ Report to review:
 
 
 def route_next(state: GraphState):
-    """Conditional-edge function used after the planner and every
-    preprocessing step. Reads the remaining plan and returns the name of the
-    next node to run. Once the plan is empty, instead of ending the graph we
-    now route into the Insight Agent -- preprocessing finishing doesn't mean
-    the pipeline is done, just that the data is ready to be analyzed."""
+    """Reads the remaining plan and returns the next node's name; once empty, routes into the Insight Agent."""
     plan = state["plan"]
     if not plan.steps:
         return "insight_agent"
@@ -857,11 +744,7 @@ def route_next(state: GraphState):
 
 
 def route_after_critic(state: GraphState):
-    """Conditional-edge function after the Critic Agent. Loops back to
-    Synthesis for a rewrite if the Critic rejected the draft -- unless we've
-    already hit MAX_CRITIC_REVISIONS, in which case we ship the current draft
-    anyway rather than risk looping forever on a report the Critic keeps
-    disliking for marginal reasons."""
+    """Loops back to Synthesis on rejection, unless MAX_CRITIC_REVISIONS is hit -- then ships the current draft anyway."""
     if state.get("critic_approved"):
         return END
     if state.get("critic_revisions", 0) >= MAX_CRITIC_REVISIONS:
@@ -891,18 +774,14 @@ def build_graph():
 
     builder.set_entry_point("planner")
 
-    # Every node -- including the planner -- routes to whatever step is next
-    # in the plan, or to the Insight Agent once the plan is empty.
     route_map = {step: step for step in VALID_STEPS}
     route_map["insight_agent"] = "insight_agent"
 
     for node_name in ["planner"] + VALID_STEPS:
         builder.add_conditional_edges(node_name, route_next, route_map)
 
-    # Full multi-agent chain:
-    #   Insight -> Visualization -> Synthesis -> Critic
-    #                                    ^            |
-    #                                    └── reject ───┘ (up to MAX_CRITIC_REVISIONS times)
+    # Insight -> Visualization -> Synthesis -> Critic, looping back to
+    # Synthesis on rejection (up to MAX_CRITIC_REVISIONS times).
     builder.add_edge("insight_agent", "visualization_agent")
     builder.add_edge("visualization_agent", "synthesis_agent")
     builder.add_edge("synthesis_agent", "critic_agent")
@@ -916,7 +795,7 @@ def build_graph():
 
 
 if __name__ == "__main__":
-    
+    # python -m src.graph path/to/your.csv [target_column]
     import sys
 
     if len(sys.argv) < 2:
