@@ -1,3 +1,4 @@
+[![CI](https://github.com/adityaranjan7029-45/agentic-eda/actions/workflows/ci.yml/badge.svg)](https://github.com/adityaranjan7029-45/agentic-eda/actions/workflows/ci.yml)
 # 📊 Agentic EDA
 
 > **A multi-agent, autonomous Exploratory Data Analysis pipeline built with LangGraph and open-source LLMs (via Groq), that plans its own preprocessing, analyzes the cleaned data, and writes up its own findings.**
