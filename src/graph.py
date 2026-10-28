@@ -3,8 +3,9 @@ import builtins
 import io
 import os
 import re
-import signal
+import sys
 import time
+import uuid
 from pathlib import Path
 from groq import RateLimitError, BadRequestError
 import matplotlib
@@ -396,8 +397,31 @@ class ChartExecutionTimeout(Exception):
     """Raised when generated chart code runs too long (possible infinite loop)."""
 
 
-def _timeout_handler(signum, frame):
-    raise ChartExecutionTimeout("Chart code took too long to run (possible infinite loop)")
+# Filename the sandboxed code is compiled under, so the timeout tracer can
+# tell the chart's own frames apart from matplotlib/pandas internals.
+_SANDBOX_FILENAME = "<chart-code>"
+
+
+def _make_deadline_tracer(deadline: float):
+    """sys.settrace hook that aborts the sandboxed code once `deadline` passes.
+
+    Replaces the old SIGALRM timeout, which only works in the main thread.
+    Streamlit runs every script in a worker thread, so on Linux SIGALRM raised
+    ValueError and every chart failed. settrace is per-thread and works on
+    Windows too. Only frames compiled from the chart code are line-traced, so
+    matplotlib's own internals run at full speed."""
+
+    def local_tracer(frame, event, arg):
+        if time.monotonic() > deadline:
+            raise ChartExecutionTimeout("Chart code took too long to run (possible infinite loop)")
+        return local_tracer
+
+    def global_tracer(frame, event, arg):
+        if frame.f_code.co_filename == _SANDBOX_FILENAME:
+            return local_tracer
+        return None
+
+    return global_tracer
 
 _SAFE_BUILTINS = {
     name: getattr(builtins, name)
@@ -507,7 +531,7 @@ def _make_write_jail(charts_dir: str):
 
 
 def execute_chart_code(code: str, df: pd.DataFrame, save_path: str, timeout_seconds: int = 15):
-    """Runs one chart's LLM-generated code in a restricted sandbox: AST safety check, minimal builtins, a savefig write jail, and a SIGALRM timeout. Any exception propagates to drive the self-healing retry. Defense against a confused/prompt-injected LLM, not OS-level isolation."""
+    """Runs one chart's LLM-generated code in a restricted sandbox: AST safety check, minimal builtins, a savefig write jail, and a per-thread sys.settrace timeout. Any exception propagates to drive the self-healing retry. Defense against a confused/prompt-injected LLM, not OS-level isolation."""
 
     _assert_chart_code_is_safe(code)
 
@@ -523,16 +547,13 @@ def execute_chart_code(code: str, df: pd.DataFrame, save_path: str, timeout_seco
         "save_path": save_path,
     }
 
-    use_alarm = hasattr(signal, "SIGALRM")  # SIGALRM doesn't exist on Windows
-    if use_alarm:
-        signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(timeout_seconds)
-
+    compiled = compile(code, _SANDBOX_FILENAME, "exec")
+    previous_tracer = sys.gettrace()
+    sys.settrace(_make_deadline_tracer(time.monotonic() + timeout_seconds))
     try:
-        exec(code, sandbox_globals)
+        exec(compiled, sandbox_globals)
     finally:
-        if use_alarm:
-            signal.alarm(0)
+        sys.settrace(previous_tracer)
         plt.close("all")  # always clean up figures, success or failure
 
 
@@ -582,7 +603,10 @@ def visualization_agent_node(state: GraphState):
     df = state["df"].copy()
     insights = state.get("insights", [])
 
-    os.makedirs(CHARTS_DIR, exist_ok=True)
+    # One directory per run: charts from concurrent users can't overwrite
+    # each other even when the LLM picks the same filename.
+    run_charts_dir = os.path.join(CHARTS_DIR, uuid.uuid4().hex[:12])
+    os.makedirs(run_charts_dir, exist_ok=True)
 
     llm = get_llm(model=AGENT_MODELS["visualization"])
     structured_llm = llm.with_structured_output(VisualizationPlan)
@@ -629,7 +653,7 @@ End every chart's code with exactly:
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", chart.filename) or "chart.png"
         if not safe_name.lower().endswith(".png"):
             safe_name += ".png"
-        save_path = os.path.join(CHARTS_DIR, safe_name)
+        save_path = os.path.join(run_charts_dir, safe_name)
 
         code = _normalize_unicode_punctuation(_strip_code_fences(chart.code))
         chart_title = _normalize_unicode_punctuation(chart.title)

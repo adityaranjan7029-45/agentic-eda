@@ -181,14 +181,37 @@ plt.close()
 
 def test_timeout_stops_infinite_loop(df, save_path):
     """A runaway loop must be killed rather than hanging the whole pipeline."""
-    import signal as _signal
+    from src.graph import ChartExecutionTimeout
 
-    if not hasattr(_signal, "SIGALRM"):
-        pytest.skip("SIGALRM unavailable on this platform")
-    code = "while True:\n    pass"
-    with pytest.raises(Exception) as exc:
-        execute_chart_code(code, df, save_path, timeout_seconds=2)
-    assert "too long" in str(exc.value).lower() or "timeout" in type(exc.value).__name__.lower()
+    with pytest.raises(ChartExecutionTimeout):
+        execute_chart_code("while True:\n    pass", df, save_path, timeout_seconds=1)
+
+
+def test_sandbox_works_in_non_main_thread(df, save_path):
+    """Regression: Streamlit runs scripts in a worker thread. The old SIGALRM
+    timeout raised 'signal only works in main thread' there, so on Linux
+    every chart failed. Both a normal chart and the timeout must work."""
+    import threading
+    from src.graph import ChartExecutionTimeout
+
+    results = {}
+
+    def worker():
+        try:
+            execute_chart_code("plt.plot(df['a'])\nplt.savefig(save_path)\nplt.close()", df, save_path)
+            results["chart"] = "ok"
+        except Exception as e:
+            results["chart"] = repr(e)
+        try:
+            execute_chart_code("while True:\n    pass", df, save_path, timeout_seconds=1)
+            results["timeout"] = "not raised"
+        except ChartExecutionTimeout:
+            results["timeout"] = "ok"
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join(timeout=30)
+    assert results == {"chart": "ok", "timeout": "ok"}
 
 
 if __name__ == "__main__":

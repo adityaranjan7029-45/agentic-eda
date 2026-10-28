@@ -272,11 +272,14 @@ with up_col:
 
 with sample_col:
     st.write("")
-    if st.button("Try the sample dataset", width="stretch"):
-        st.session_state.df = load_sample()
-        st.session_state.source_name = SAMPLE_CSV.name
-        st.session_state.pop("result", None)
-    st.caption("Customer churn CSV with deliberate missing values.")
+    if SAMPLE_CSV.exists():
+        if st.button("Try the sample dataset", width="stretch"):
+            st.session_state.df = load_sample()
+            st.session_state.source_name = SAMPLE_CSV.name
+            st.session_state.pop("result", None)
+        st.caption("Customer churn CSV with deliberate missing values.")
+    else:
+        st.caption("Sample dataset not found in this deployment.")
 
 # The pipeline sends column names, stats and sample rows to Groq -- say so up front.
 st.caption(
@@ -287,14 +290,11 @@ st.caption(
 )
 
 if uploaded_file is not None:
-    # Persist so a rerun doesn't lose it.
-    raw_dir = REPO_ROOT / "data" / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    file_path = raw_dir / uploaded_file.name
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    # Parsed straight from memory -- never written to disk. Writing to a shared
+    # data/raw/<name> path let concurrent users overwrite each other's files
+    # and contradicted the "not retained" privacy notice above.
     try:
-        new_df = pd.read_csv(file_path)
+        new_df = pd.read_csv(uploaded_file)
         if st.session_state.source_name != uploaded_file.name:
             st.session_state.pop("result", None)
         st.session_state.df = new_df

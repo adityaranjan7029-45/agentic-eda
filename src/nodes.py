@@ -249,10 +249,13 @@ def type_conversion_node(state: GraphState):
     # Refetch object columns since some might have just become booleans
     obj_cols = df.select_dtypes(include=['object', 'string']).columns
     for col in obj_cols:
+        # pandas 3 removed errors='ignore' (it now raises ValueError, which the
+        # old bare except swallowed -- so NO column was ever converted).
+        # Converting explicitly and skipping on failure keeps the intended
+        # all-or-nothing behaviour: real text columns (like 'Names') are left alone.
         try:
-            # errors='ignore' safely skips columns that are actual text (like 'Names')
-            df[col] = pd.to_numeric(df[col], errors='ignore')
-        except Exception:
+            df[col] = pd.to_numeric(df[col])
+        except (ValueError, TypeError):
             pass
             
     # 4. Convert Strings to Datetimes
