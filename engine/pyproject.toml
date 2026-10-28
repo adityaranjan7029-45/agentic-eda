@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eda-engine"
+version = "0.1.0"
+description = "Core analysis engine for Agentic EDA v2: profiling, preprocessing, findings, industry packs."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "scikit-learn>=1.5",
+]
+
+[project.scripts]
+eda-synth-credit = "eda_engine.synth.credit:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
