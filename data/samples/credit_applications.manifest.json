@@ -1,0 +1,262 @@
+{
+  "dataset": "synthetic_credit_applications",
+  "generator_version": 1,
+  "seed": 42,
+  "messy": true,
+  "n_rows": 5025,
+  "n_columns": 122,
+  "target": "default_flag",
+  "target_rate": 0.1266,
+  "planted_drivers": [
+    {
+      "column": "credit_score",
+      "direction": "-",
+      "strength": "strong"
+    },
+    {
+      "column": "debt_to_income",
+      "direction": "+",
+      "strength": "strong"
+    },
+    {
+      "column": "revolving_utilization",
+      "direction": "+",
+      "strength": "moderate"
+    },
+    {
+      "column": "num_delinquencies_2y",
+      "direction": "+",
+      "strength": "moderate"
+    },
+    {
+      "column": "txn_cash_withdrawal_trend_3m",
+      "direction": "+",
+      "strength": "moderate"
+    },
+    {
+      "column": "loan_term_months",
+      "direction": "+",
+      "strength": "moderate"
+    },
+    {
+      "column": "num_credit_inquiries_6m",
+      "direction": "+",
+      "strength": "weak"
+    },
+    {
+      "column": "employment_years",
+      "direction": "-",
+      "strength": "weak"
+    },
+    {
+      "column": "bureau_attr_051",
+      "direction": "+",
+      "strength": "weak"
+    },
+    {
+      "column": "bureau_attr_042",
+      "direction": "-",
+      "strength": "weak"
+    }
+  ],
+  "confounded_columns": [
+    {
+      "column": "interest_rate",
+      "via": "credit_score",
+      "note": "priced from credit_score; correlates with default but is not an independent driver"
+    }
+  ],
+  "noise_columns": [
+    "bureau_attr_001",
+    "bureau_attr_002",
+    "bureau_attr_003",
+    "bureau_attr_004",
+    "bureau_attr_005",
+    "bureau_attr_006",
+    "bureau_attr_007",
+    "bureau_attr_008",
+    "bureau_attr_009",
+    "bureau_attr_010",
+    "bureau_attr_011",
+    "bureau_attr_012",
+    "bureau_attr_013",
+    "bureau_attr_014",
+    "bureau_attr_015",
+    "bureau_attr_016",
+    "bureau_attr_017",
+    "bureau_attr_018",
+    "bureau_attr_019",
+    "bureau_attr_020",
+    "bureau_attr_021",
+    "bureau_attr_022",
+    "bureau_attr_023",
+    "bureau_attr_024",
+    "bureau_attr_025",
+    "bureau_attr_026",
+    "bureau_attr_027",
+    "bureau_attr_028",
+    "bureau_attr_029",
+    "bureau_attr_030",
+    "bureau_attr_031",
+    "bureau_attr_032",
+    "bureau_attr_033",
+    "bureau_attr_034",
+    "bureau_attr_035",
+    "bureau_attr_036",
+    "bureau_attr_037",
+    "bureau_attr_038",
+    "bureau_attr_039",
+    "bureau_attr_040",
+    "bureau_attr_041",
+    "bureau_attr_043",
+    "bureau_attr_044",
+    "bureau_attr_045",
+    "bureau_attr_046",
+    "bureau_attr_047",
+    "bureau_attr_048",
+    "bureau_attr_049",
+    "bureau_attr_050",
+    "bureau_attr_052",
+    "bureau_attr_053",
+    "bureau_attr_054",
+    "bureau_attr_055",
+    "bureau_attr_056",
+    "bureau_attr_057",
+    "bureau_attr_058",
+    "bureau_attr_059",
+    "bureau_attr_060",
+    "bureau_attr_061",
+    "bureau_attr_062",
+    "bureau_attr_063",
+    "bureau_attr_064",
+    "txn_groceries_avg_monthly",
+    "txn_groceries_max_monthly",
+    "txn_groceries_count_monthly",
+    "txn_groceries_trend_3m",
+    "txn_travel_avg_monthly",
+    "txn_travel_max_monthly",
+    "txn_travel_count_monthly",
+    "txn_travel_trend_3m",
+    "txn_utilities_avg_monthly",
+    "txn_utilities_max_monthly",
+    "txn_utilities_count_monthly",
+    "txn_utilities_trend_3m",
+    "txn_entertainment_avg_monthly",
+    "txn_entertainment_max_monthly",
+    "txn_entertainment_count_monthly",
+    "txn_entertainment_trend_3m",
+    "txn_cash_withdrawal_avg_monthly",
+    "txn_cash_withdrawal_max_monthly",
+    "txn_cash_withdrawal_count_monthly"
+  ],
+  "correlated_noise_clusters": [
+    [
+      "bureau_attr_001",
+      "bureau_attr_002",
+      "bureau_attr_003",
+      "bureau_attr_004",
+      "bureau_attr_005",
+      "bureau_attr_006",
+      "bureau_attr_007",
+      "bureau_attr_008"
+    ],
+    [
+      "bureau_attr_009",
+      "bureau_attr_010",
+      "bureau_attr_011",
+      "bureau_attr_012",
+      "bureau_attr_013",
+      "bureau_attr_014",
+      "bureau_attr_015",
+      "bureau_attr_016"
+    ],
+    [
+      "bureau_attr_017",
+      "bureau_attr_018",
+      "bureau_attr_019",
+      "bureau_attr_020",
+      "bureau_attr_021",
+      "bureau_attr_022",
+      "bureau_attr_023",
+      "bureau_attr_024"
+    ],
+    [
+      "bureau_attr_025",
+      "bureau_attr_026",
+      "bureau_attr_027",
+      "bureau_attr_028",
+      "bureau_attr_029",
+      "bureau_attr_030",
+      "bureau_attr_031",
+      "bureau_attr_032"
+    ]
+  ],
+  "leakage_columns": [
+    "days_past_due_current",
+    "collections_flag"
+  ],
+  "informative_missingness": [
+    {
+      "column": "months_since_last_delinquency",
+      "meaning": "missing means no delinquency in 2 years, which lowers default risk"
+    }
+  ],
+  "protected_attributes": [
+    "age",
+    "gender"
+  ],
+  "proxy_features": [
+    {
+      "column": "postal_area",
+      "proxies_for": "age"
+    }
+  ],
+  "null_effect_columns": [
+    "gender"
+  ],
+  "trivial_derived_pairs": [
+    [
+      "annual_income",
+      "monthly_income"
+    ]
+  ],
+  "redundant_pairs": [
+    [
+      "total_credit_limit",
+      "total_revolving_limit"
+    ]
+  ],
+  "id_columns": [
+    "application_id",
+    "customer_id"
+  ],
+  "constant_columns": [
+    "data_source_version"
+  ],
+  "mostly_missing_columns": [
+    "secondary_applicant_income"
+  ],
+  "high_cardinality_columns": [
+    "employer_name"
+  ],
+  "date_columns": [
+    "application_date"
+  ],
+  "data_quality_issues": {
+    "duplicate_rows": 25,
+    "hidden_null_tokens": {
+      "employment_type": [
+        "N/A",
+        "unknown",
+        "?",
+        " "
+      ]
+    },
+    "currency_strings": [
+      "savings_balance"
+    ],
+    "inconsistent_category_spellings": [
+      "home_ownership"
+    ]
+  }
+}
