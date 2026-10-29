@@ -251,16 +251,17 @@ def _classify(name: str, series: pd.Series, n_rows: int, target: str | None, cfg
     if n_present == 0:
         return info(ColumnRole.EMPTY, "no non-missing values", 0)
 
-    if name == target:
-        return info(ColumnRole.TARGET, "chosen as the target column", int(present.nunique()))
-
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return info(ColumnRole.DATETIME, "stored as a datetime type", int(present.nunique()))
-
     # Count categories on canonical spelling so 'Rent'/' rent'/'RENT' count once.
     canonical = present.str.lower() if _is_text(series) else present
     n_unique = int(canonical.nunique())
     uniqueness = n_unique / n_present
+
+    if name == target:
+        # Canonical count: a 'Yes'/'yes'/'No' target is binary, not three-valued.
+        return info(ColumnRole.TARGET, "chosen as the target column", n_unique)
+
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return info(ColumnRole.DATETIME, "stored as a datetime type", n_unique)
 
     if n_unique == 1:
         return info(ColumnRole.CONSTANT, "a single distinct value", n_unique)
