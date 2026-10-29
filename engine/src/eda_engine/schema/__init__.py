@@ -6,7 +6,20 @@ from eda_engine.schema.roles import (
     DatasetSchema,
     Flag,
     RoleConfig,
+    clean_values,
+    datetime_values,
     infer_schema,
+    numeric_values,
 )
 
-__all__ = ["ColumnInfo", "ColumnRole", "DatasetSchema", "Flag", "RoleConfig", "infer_schema"]
+__all__ = [
+    "ColumnInfo",
+    "ColumnRole",
+    "DatasetSchema",
+    "Flag",
+    "RoleConfig",
+    "clean_values",
+    "datetime_values",
+    "infer_schema",
+    "numeric_values",
+]

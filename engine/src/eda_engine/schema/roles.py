@@ -202,6 +202,28 @@ def _numeric_values(series: pd.Series, info: ColumnInfo, cfg: RoleConfig) -> pd.
     return pd.to_numeric(series, errors="coerce")
 
 
+def numeric_values(series: pd.Series, info: ColumnInfo, config: RoleConfig | None = None) -> pd.Series:
+    """The column as floats, parsed the same way role detection read it
+    ('$1,234.50' -> 1234.5, '12%' -> 12.0). Unparseable values become NaN."""
+    return _numeric_values(series, info, config or RoleConfig()).astype("float64")
+
+
+def clean_values(series: pd.Series, config: RoleConfig | None = None) -> pd.Series:
+    """Text with whitespace stripped and placeholder tokens ('N/A', 'unknown') turned into NaN."""
+    if not _is_text(series):
+        return series
+    return _clean_text(series, config or RoleConfig())[0]
+
+
+def datetime_values(series: pd.Series) -> pd.Series:
+    """The column as datetimes; unparseable values become NaT."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pd.to_datetime(series, errors="coerce", format="mixed")
+
+
 # ---------------------------------------------------------------------------
 # Per-column classification
 # ---------------------------------------------------------------------------
