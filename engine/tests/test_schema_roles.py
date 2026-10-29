@@ -187,6 +187,16 @@ def test_text_target_is_supported(leaky_frame):
     assert "leak_numeric" in infer_schema(frame, target="y").with_flag(Flag.LEAKAGE_SUSPECT)
 
 
+def test_target_with_spelling_variants_is_still_binary_and_screened(leaky_frame):
+    """Regression: 'Yes'/'yes'/'No' was counted as three values, so the target
+    wasn't treated as binary and the leakage screen was silently skipped."""
+    labels = np.where(leaky_frame["y"] == 1, "Yes", "No").astype(object)
+    labels[::7] = np.where(leaky_frame["y"].to_numpy()[::7] == 1, "yes", "no")
+    schema = infer_schema(leaky_frame.assign(y=labels), target="y")
+    assert schema["y"].n_unique == 2
+    assert "leak_numeric" in schema.with_flag(Flag.LEAKAGE_SUSPECT)
+
+
 def test_invalid_inputs_raise():
     with pytest.raises(ValueError, match="not found"):
         infer_schema(pd.DataFrame({"a": [1, 2]}), target="missing")
