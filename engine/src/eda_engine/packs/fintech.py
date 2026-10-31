@@ -113,18 +113,19 @@ def _bins(x: pd.Series, role: ColumnRole, n_bins: int) -> pd.Series:
 def information_value(x: pd.Series, y: pd.Series, role: ColumnRole, cfg: FintechConfig) -> tuple[float, list[dict]]:
     """IV = sum over bins of (share of goods - share of bads) x WoE,
     WoE = ln(share of goods / share of bads). 'Bad' = target 1 (e.g. default)."""
-    bins = _bins(x, role, cfg.iv_bins)
-    table = pd.crosstab(bins, y).reindex(columns=[0, 1], fill_value=0)
-    goods = table[0] + cfg.woe_smoothing
-    bads = table[1] + cfg.woe_smoothing
+    codes, labels = pd.factorize(_bins(x, role, cfg.iv_bins), sort=True)
+    yv = np.asarray(y, dtype=int)
+    total = np.bincount(codes, minlength=len(labels))
+    bad_count = np.bincount(codes, weights=yv, minlength=len(labels))
+    good_count = total - bad_count
+    goods, bads = good_count + cfg.woe_smoothing, bad_count + cfg.woe_smoothing
     good_share, bad_share = goods / goods.sum(), bads / bads.sum()
     woe = np.log(good_share / bad_share)
     iv = float(((good_share - bad_share) * woe).sum())
     detail = [
-        {"bin": str(b), "count": int(table.loc[b].sum()),
-         "bad_rate": round(float(table.loc[b, 1] / max(1, table.loc[b].sum())), 4),
-         "woe": round(float(woe[b]), 4)}
-        for b in table.index
+        {"bin": str(label), "count": int(total[i]),
+         "bad_rate": round(float(bad_count[i] / max(1, total[i])), 4), "woe": round(float(woe[i]), 4)}
+        for i, label in enumerate(labels)
     ]
     return iv, detail
 
@@ -192,12 +193,16 @@ def _cramers_v(a: pd.Series, b: pd.Series) -> float:
 
 def _correlation_ratio(categories: pd.Series, values: pd.Series) -> float:
     """Eta: how much of a number's variation is explained by a category (0..1)."""
-    frame = pd.DataFrame({"c": categories, "x": values}).dropna()
-    if frame["c"].nunique() < 2:
+    x = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    mask = ~np.isnan(x) & categories.notna().to_numpy()
+    codes, labels = pd.factorize(categories[mask])
+    if len(labels) < 2:
         return 0.0
-    groups = frame.groupby("c")["x"]
-    between = (groups.count() * (groups.mean() - frame["x"].mean()) ** 2).sum()
-    total = ((frame["x"] - frame["x"].mean()) ** 2).sum()
+    x = x[mask]
+    counts = np.bincount(codes)
+    means = np.bincount(codes, weights=x) / counts
+    between = float((counts * (means - x.mean()) ** 2).sum())
+    total = float(((x - x.mean()) ** 2).sum())
     return float(np.sqrt(between / total)) if total > 0 else 0.0
 
 

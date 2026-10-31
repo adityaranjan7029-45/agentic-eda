@@ -51,6 +51,10 @@ class FindingsConfig:
     min_class_size: int = 30           # each target class needs this many non-missing rows
     category_smoothing: float = 20.0
     max_correlations: int = 10         # no-target mode: how many column pairs to report
+    # Findings with q above this are labelled "tentative". On the benchmark
+    # (step 8) every noise column that passed the FDR gate had q >= 0.008, while
+    # every planted driver at 5,000+ rows had q < 0.0001.
+    high_confidence_q: float = 0.001
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,7 @@ class Finding:
     evidence: dict = field(default_factory=dict)
     related_to: str | None = None  # secondary drivers: the stronger driver they restate
     correlation: float | None = None
+    confidence: str = "high"       # "high" | "tentative" (significant, but close to the noise level)
 
     def to_dict(self) -> dict:
         return {
@@ -74,6 +79,7 @@ class Finding:
             "n": self.n, "summary": self.summary, "evidence": self.evidence,
             "related_to": self.related_to,
             "correlation": None if self.correlation is None else round(self.correlation, 3),
+            "confidence": self.confidence,
         }
 
 
@@ -108,6 +114,10 @@ class FindingsReport:
 def _source(column: str) -> str:
     """'income__missing' and 'income' share a source; so do 'date__month' and 'date'."""
     return column.split("__", 1)[0]
+
+
+def _confidence(q: float, cfg: FindingsConfig) -> str:
+    return "high" if q <= cfg.high_confidence_q else "tentative"
 
 
 def benjamini_hochberg(p_values: list[float]) -> list[float]:
@@ -294,7 +304,7 @@ def discover_findings(prep: PreprocessResult, config: FindingsConfig | None = No
         if kind == "driver":
             primary.append(t.column)
         findings.append(Finding(kind, t.column, t.direction, t.gini, t.p_value, q, t.n,
-                                t.summary, t.evidence, related, r_value))
+                                t.summary, t.evidence, related, r_value, _confidence(q, cfg)))
 
     return FindingsReport(
         target=target, target_rate=round(float(y_all.mean()), 4), n_rows=len(df),
@@ -329,7 +339,7 @@ def _correlation_report(df, schema, target, candidates, numeric_like, redundant,
     findings = [
         Finding("correlation", f"{a} ~ {b}", "+" if r > 0 else "-", abs(r), p, q, n,
                 f"{a} and {b} move {'together' if r > 0 else 'in opposite directions'} (Spearman {r:.2f})",
-                {"spearman": round(r, 4), "columns": [a, b]})
+                {"spearman": round(r, 4), "columns": [a, b]}, confidence=_confidence(q, cfg))
         for (a, b, r, p, n), q in kept[: cfg.max_correlations]
     ]
     return FindingsReport(
