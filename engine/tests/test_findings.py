@@ -211,3 +211,30 @@ def test_no_target_mode_reports_real_correlations_not_duplicates():
     assert frozenset({"spend", "spend_copy"}) not in pairs
     assert {"spend", "spend_copy"} in [set(p["columns"]) for p in report.redundant_pairs]
     assert not any("unrelated" in p for p in pairs)
+
+
+# ---------------------------------------------------------------------------
+# Confidence labels (added in step 8, from the benchmark)
+# ---------------------------------------------------------------------------
+
+def test_strong_findings_are_high_confidence(credit):
+    _, report = credit
+    by_column = {f.column: f for f in report.findings}
+    assert by_column["credit_score"].confidence == "high"
+    assert by_column["debt_to_income"].confidence == "high"
+    for f in report.findings:
+        assert f.confidence == ("high" if f.q_value <= 0.001 else "tentative")
+        assert f.to_dict()["confidence"] == f.confidence
+
+
+def test_confidence_threshold_is_configurable():
+    dataset = generate_credit_applications(n_rows=3000, seed=5)
+    strict = _analyse(dataset.data, "default_flag", FindingsConfig(high_confidence_q=0.0))
+    assert strict.findings and all(f.confidence == "tentative" for f in strict.findings)
+
+
+def test_borderline_findings_on_small_data_are_tentative():
+    """On 1,000 rows, weak effects only just pass the FDR gate: they are reported, but labelled."""
+    dataset = generate_credit_applications(n_rows=1000, seed=0)
+    report = _analyse(dataset.data, "default_flag")
+    assert {f.confidence for f in report.findings} == {"high", "tentative"}

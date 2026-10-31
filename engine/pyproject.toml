@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 eda-synth-credit = "eda_engine.synth.credit:main"
+eda-benchmark = "eda_engine.evaluation.harness:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
