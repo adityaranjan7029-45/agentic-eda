@@ -238,3 +238,14 @@ def test_protected_attributes_are_not_reported_as_proxies_of_each_other():
     report = _run(frame, target="y")
     assert set(report.protected_attributes) == {"age", "marital_status"}
     assert report.proxies == []
+
+
+def test_numeric_bins_are_in_natural_order_with_missing_last():
+    rng = np.random.default_rng(7)
+    x = pd.Series(rng.uniform(0, 2000, 3000))
+    x[:50] = np.nan
+    y = pd.Series(rng.integers(0, 2, 3000))
+    _, woe = information_value(x, y, ColumnRole.NUMERIC, FintechConfig())
+    assert woe[-1]["bin"] == "missing"
+    lows = [float(w["bin"].split(" to ")[0].replace(",", "")) for w in woe[:-1]]
+    assert lows == sorted(lows) and len(lows) == 10    # text sorting would put "1,000" before "200"

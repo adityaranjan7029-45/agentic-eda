@@ -23,3 +23,15 @@ def test_real_provider_answers_json_within_budget(provider):
     assert data.get("status") == "ok"
     assert response.usage.provider == provider and not response.usage.estimated
     assert client.budget.used <= 2000
+
+
+@pytest.mark.skipif(not AVAILABLE, reason="no provider API key in the environment")
+def test_real_llm_report_is_verified_and_within_budget():
+    from eda_engine.agents import run_analysis
+    from eda_engine.synth.credit import generate_credit_applications
+
+    client = LLMClient(KeyRing.from_env(KEY_ENV_VARS), budget=TokenBudget(10_000))
+    report = run_analysis(generate_credit_applications(n_rows=5000, seed=42).data, "default_flag", llm=client)
+    assert report.verification["status"] in ("passed", "passed_after_revision", "repaired")
+    assert report.verification["remaining_issues"] == []
+    assert report.tokens["used"] <= 10_000

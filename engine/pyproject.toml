@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=2.2",
     "httpx>=0.27",
     "scipy>=1.11",
+    "langgraph>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
 [project.scripts]
 eda-synth-credit = "eda_engine.synth.credit:main"
 eda-benchmark = "eda_engine.evaluation.harness:main"
+eda-analyze = "eda_engine.agents.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

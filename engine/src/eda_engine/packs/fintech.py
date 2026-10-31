@@ -101,19 +101,26 @@ def iv_band(iv: float) -> str:
     return next(label for limit, label in IV_BANDS if iv < limit)
 
 
-def _bins(x: pd.Series, role: ColumnRole, n_bins: int) -> pd.Series:
-    """Quantile bins for numbers, categories as they are; missing is its own bin."""
+def _bins(x: pd.Series, role: ColumnRole, n_bins: int) -> tuple[np.ndarray, list[str]]:
+    """Bin codes and labels in natural order: quantile ranges low -> high for numbers,
+    categories sorted; missing values get their own bin, last."""
     if role == ColumnRole.NUMERIC and x.nunique() > n_bins:
-        binned = pd.qcut(x, q=n_bins, duplicates="drop").astype(str)
+        binned = pd.qcut(x, q=n_bins, duplicates="drop")
+        labels = [f"{i.left:,.4g} to {i.right:,.4g}" for i in binned.cat.categories]
+        codes = binned.cat.codes.to_numpy().copy()
     else:
-        binned = x.astype(str)
-    return binned.where(x.notna(), "missing")
+        codes, uniques = pd.factorize(x, sort=True)
+        labels = [str(u) for u in uniques]
+    if (codes < 0).any():
+        codes[codes < 0] = len(labels)
+        labels.append("missing")
+    return codes, labels
 
 
 def information_value(x: pd.Series, y: pd.Series, role: ColumnRole, cfg: FintechConfig) -> tuple[float, list[dict]]:
     """IV = sum over bins of (share of goods - share of bads) x WoE,
     WoE = ln(share of goods / share of bads). 'Bad' = target 1 (e.g. default)."""
-    codes, labels = pd.factorize(_bins(x, role, cfg.iv_bins), sort=True)
+    codes, labels = _bins(x, role, cfg.iv_bins)
     yv = np.asarray(y, dtype=int)
     total = np.bincount(codes, minlength=len(labels))
     bad_count = np.bincount(codes, weights=yv, minlength=len(labels))
