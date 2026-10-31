@@ -94,3 +94,6 @@ Thumbs.db
 .cache/
 temp/
 tmp/
+
+# eda-benchmark output
+/reports/
