@@ -1,6 +1,79 @@
 [![CI](https://github.com/adityaranjan7029-45/agentic-eda/actions/workflows/ci.yml/badge.svg)](https://github.com/adityaranjan7029-45/agentic-eda/actions/workflows/ci.yml)
 # 📊 Agentic EDA
 
+> **A credit-risk EDA engine where statistics find the insights and an LLM only writes them up, with every number checked by a deterministic Critic before anyone sees it.**
+
+**v1 live demo (prototype):** https://agentic-eda-aie24xzwwqtbgf4rqkdezi.streamlit.app/ (may take a minute to wake up)
+
+**Status:** v2 backend complete (engine, evaluation, LLM layer, agents, API, job queue). Auth, Next.js frontend, Docker Compose and deployment are in progress. Full step-by-step history: PRs #1–#12.
+
+## v2 at a glance
+
+v1 asked the LLM to find patterns, write chart code and judge itself. v2 inverts that:
+
+| | v1 (prototype) | v2 |
+|---|---|---|
+| Who finds insights | the LLM, from a data summary | statistics: Mann-Whitney / chi-square, **Benjamini–Hochberg FDR**, Gini ≥ 0.10, redundancy linking |
+| Domain knowledge | none | **fintech pack**: IV/WoE, KS, lender-decision rule (interest rate ≠ applicant trait), **fair-lending proxy detection** |
+| Numbers in the report | whatever the LLM wrote | **deterministic Critic**: every number must match computed evidence for that variable; failing sentences are revised or removed |
+| Charts | LLM-written matplotlib, sandboxed | Vega-Lite specs built from evidence (no code execution, zero tokens) |
+| LLM cost | unbounded | hard **10k-token budget per run**, Groq → Cerebras → OpenRouter fallback, bring-your-own-key |
+| Proof it works | manual checks | synthetic data with a planted answer key + **400+ tests** in CI on real Postgres and Redis |
+
+## Proof: held-out benchmark
+
+Synthetic credit datasets with planted drivers, noise, leakage, a confounder and a proxy; seeds 100–107 were never used for tuning ([`docs/benchmark.md`](docs/benchmark.md)).
+
+| Rows | Planted drivers found | False-discovery share |
+|---|---|---|
+| 1,000 | 86% | 5.1% |
+| 2,500 | 99% | 4.5% |
+| 5,000 | **100%** | **0%** |
+| 20,000 | **100%** | **0%** |
+
+Overall false-discovery share **2.4%** (high-confidence findings: **0.26%**); all 32 runs pass every hard check (leakage excluded, interest rate labelled a lender decision, postal-area → age proxy flagged, profile under 2,000 tokens).
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U[CSV upload] --> API[FastAPI]
+  API -->|validate, queue| Q[(Redis queue)]
+  Q --> W[eda-worker]
+  W --> E["Engine: roles → preprocessing → findings → fintech pack"]
+  E --> N[LLM narrator]
+  N --> C{Deterministic Critic}
+  C -->|issues| N
+  C -->|verified report| DB[(Postgres: run history)]
+  W -. progress events .-> S[(Redis Stream)]
+  S -. SSE .-> B[Browser]
+```
+
+- **Privacy by design:** uploads are deleted after every run (success or failure); reports store only aggregates.
+- **Bring your own key:** a user's LLM key is used for one run, travels to the worker Fernet-encrypted with a 10-minute expiry, and never reaches the database, logs or disk.
+- **Reliable jobs:** BLMOVE processing list + leases (dead workers detected), live progress over Server-Sent Events, replayable after reconnects.
+
+## Run v2 locally
+
+```bash
+uv venv && uv pip install -e "engine[dev]" -e "api[dev]"
+python -m pytest -q                                   # 400+ tests
+eda-benchmark --sizes 5000 --seeds 2                  # score the engine against the answer key
+eda-analyze data/samples/credit_applications.csv --target default_flag --env-file .env
+uvicorn eda_api.main:app --reload                     # API docs at http://localhost:8000/docs
+```
+
+| Folder | What's in it |
+|---|---|
+| `engine/` | the analysis library: synthetic data, roles, profiler, preprocessing, findings, fintech pack, evaluation, LLM layer, agents |
+| `api/` | FastAPI app, Postgres models + Alembic migrations, job queue (inline / Redis), `eda-worker` |
+| `docs/` | held-out benchmark results |
+| `app/`, `src/` | v1 prototype (Streamlit + LangGraph), kept for comparison |
+
+---
+
+## v1 prototype (Streamlit)
+
 > **A multi-agent, autonomous Exploratory Data Analysis pipeline built with LangGraph and open-source LLMs (via Groq), that plans its own preprocessing, analyzes the cleaned data, and writes up its own findings.**
 
 Upload a raw CSV → five specialized agents plan the preprocessing, clean the data, find the patterns worth knowing about, chart them, and write a report — with no human choosing the steps in between.
