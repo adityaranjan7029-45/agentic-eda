@@ -35,7 +35,7 @@ def settings(tmp_path, monkeypatch):
     for var in KEY_VARS:
         monkeypatch.delenv(var, raising=False)
     return Settings(_env_file=None, app_env="test", database_url="sqlite:///:memory:",
-                    upload_dir=tmp_path / "uploads")
+                    upload_dir=tmp_path / "uploads", inline_workers=0)   # jobs finish inside the request
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ class FakeReport:
 
 @pytest.fixture
 def fast_engine(monkeypatch):
-    monkeypatch.setattr(service, "run_analysis", lambda df, target, llm=None: FakeReport())
+    monkeypatch.setattr(service, "run_analysis", lambda df, target, llm=None, on_event=None: FakeReport())
 
 
 # ---------------------------------------------------------------------------
@@ -73,12 +73,12 @@ def fast_engine(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_health(client):
-    assert client.get("/health").json() == {"status": "ok", "database": "ok", "version": "0.1.0"}
+    assert client.get("/health").json() == {"status": "ok", "database": "ok", "queue": "inline", "version": "0.1.0"}
 
 
 def test_upload_analyse_list_get_delete(client, credit_csv, settings):
     created = upload(client, credit_csv)
-    assert created.status_code == 201, created.text
+    assert created.status_code == 202, created.text
     run = created.json()
     assert run["status"] == "succeeded"
     assert (run["n_rows"], run["target"], run["filename"]) == (2010, "default_flag", "credit.csv")  # incl. 10 planted duplicates
@@ -131,11 +131,11 @@ def test_nan_in_a_report_is_stored_as_null(client, credit_csv, fast_engine):
 # ---------------------------------------------------------------------------
 
 def test_analysis_failure_is_stored_as_failed_run_and_upload_is_deleted(client, credit_csv, settings, monkeypatch):
-    def explode(df, target, llm=None):
+    def explode(df, target, llm=None, on_event=None):
         raise RuntimeError(f"boom with data {df.iloc[0, 0]}")
     monkeypatch.setattr(service, "run_analysis", explode)
     response = upload(client, credit_csv)
-    assert response.status_code == 201
+    assert response.status_code == 202
     run = response.json()
     assert run["status"] == "failed" and run["report"] is None
     assert run["error"] == "RuntimeError: analysis failed"    # no data leaks into the error message

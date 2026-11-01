@@ -11,6 +11,7 @@ class RunSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     status: str
+    stage: str | None = None
     filename: str
     size_bytes: int
     n_rows: int | None
@@ -40,4 +41,5 @@ class RunList(BaseModel):
 class Health(BaseModel):
     status: str
     database: str
+    queue: str
     version: str
