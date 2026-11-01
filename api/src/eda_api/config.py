@@ -38,6 +38,16 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Job queue. Set REDIS_URL for Redis mode (API + separate `eda-worker`);
+    # leave it empty for inline mode (jobs run in a background thread in the API).
+    redis_url: str | None = None
+    # Encrypts users' own LLM keys while they wait in Redis for a worker (required in Redis mode).
+    secret_key: SecretStr | None = None
+    key_handover_seconds: int = Field(600, ge=30, le=3600)   # encrypted key expires after this
+    max_active_runs: int = Field(2, ge=1, le=20)              # queued + running, per user
+    job_timeout_minutes: int = Field(15, ge=1, le=120)        # a job running longer is presumed dead
+    inline_workers: int = Field(2, ge=0, le=8)                # 0 = run inside the request (tests)
+
     @field_validator("database_url")
     @classmethod
     def _driver(cls, url: str) -> str:
@@ -51,7 +61,13 @@ class Settings(BaseSettings):
     def _production_rules(self) -> Settings:
         if self.app_env == "prod" and not self.database_url.startswith("postgresql"):
             raise ValueError("APP_ENV=prod requires a Postgres DATABASE_URL")
+        if self.redis_url and not (self.secret_key and len(self.secret_key.get_secret_value()) >= 32):
+            raise ValueError("Redis mode needs SECRET_KEY (at least 32 characters) to encrypt users' keys")
         return self
+
+    @property
+    def queue_mode(self) -> str:
+        return "redis" if self.redis_url else "inline"
 
     @property
     def dev_auth(self) -> bool:

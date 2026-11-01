@@ -1,8 +1,9 @@
 """Upload handling with Privacy-by-Design: the raw file never outlives its run.
 
-The upload is streamed to a private temporary file (so a 50 MB file isn't
-held twice in memory and the size limit is enforced while reading, not after),
-parsed, and deleted in a `finally` block: success, validation error or crash.
+The upload is streamed to a private file (so a 50 MB file isn't held twice in
+memory and the size limit is enforced while reading, not after). It waits there
+until a worker picks up the job; the worker deletes it as soon as the data is in
+memory, and again in `finally`. Rejected uploads are deleted immediately.
 Leftovers from a hard crash (power loss, kill -9) are purged at startup.
 """
 
@@ -11,8 +12,6 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
@@ -27,14 +26,16 @@ class UploadRejected(ValueError):
         self.status_code = status_code
 
 
-@contextmanager
-def temporary_upload(source: BinaryIO, directory: Path, max_bytes: int) -> Iterator[tuple[Path, int]]:
-    """Copy `source` into a temp file (size-limited); yield (path, size); always delete it."""
+def save_upload(source: BinaryIO, directory: Path, max_bytes: int, name: str | None = None) -> tuple[Path, int]:
+    """Stream `source` into a private file (size limit enforced while reading). Returns (path, size).
+
+    On any rejection the partial file is deleted before the error propagates. On success the
+    caller owns the file and must delete it (the worker does, in `finally`)."""
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{uuid.uuid4().hex}.upload"
+    path = directory / f"{name or uuid.uuid4().hex}.upload"
     size = 0
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # readable by this process only
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # readable by this user only
         with os.fdopen(fd, "wb") as out:
             while chunk := source.read(CHUNK):
                 size += len(chunk)
@@ -43,9 +44,10 @@ def temporary_upload(source: BinaryIO, directory: Path, max_bytes: int) -> Itera
                 out.write(chunk)
         if size == 0:
             raise UploadRejected("file is empty")
-        yield path, size
-    finally:
+    except BaseException:
         path.unlink(missing_ok=True)
+        raise
+    return path, size
 
 
 def read_csv(path: Path, max_rows: int, max_columns: int) -> pd.DataFrame:

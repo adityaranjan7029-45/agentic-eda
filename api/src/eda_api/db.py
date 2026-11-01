@@ -40,6 +40,7 @@ class Run(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     status: Mapped[str] = mapped_column(String(16), default="queued")   # queued | running | succeeded | failed
+    stage: Mapped[str | None] = mapped_column(String(32))              # latest progress stage
     filename: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     n_rows: Mapped[int | None] = mapped_column(Integer)

@@ -55,7 +55,8 @@ def test_full_run_on_postgres_stores_jsonb_and_cascades(migrated, tmp_path, monk
 
     for var in ("GROQ_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    settings = Settings(_env_file=None, app_env="test", database_url=migrated[0], upload_dir=tmp_path)
+    settings = Settings(_env_file=None, app_env="test", database_url=migrated[0], upload_dir=tmp_path,
+                        inline_workers=0)
     csv = generate_credit_applications(n_rows=2000, seed=4).data.to_csv(index=False).encode()
     headers = {"X-User-Email": "pg@example.com"}
     with TestClient(create_app(settings)) as client:
