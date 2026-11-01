@@ -111,7 +111,19 @@ def template_narrative(facts: Facts, charts: list[ChartSpec]) -> dict:
                          "text": f"{f.column} is set by the lender from its own risk assessment, so it "
                                  "describes the lender's view of the applicant rather than the applicant.",
                          "findings": [fid], "charts": []})
+    correlations = [(fid, f) for fid, f in facts.findings.items() if f.kind == "correlation"]
+    for fid, f in correlations[:5]:
+        a, b = f.evidence["columns"]
+        direction = "together" if f.evidence["spearman"] > 0 else "in opposite directions"
+        sections.append({"title": f"{a} and {b} are related",
+                         "text": f"{a} and {b} move {direction} (Spearman correlation "
+                                 f"{f.evidence['spearman']:.2f}).",
+                         "findings": [fid], "charts": []})
     top = drivers[0][1].column if drivers else None
-    headline = (f"{facts.n_drivers} independent drivers are associated with the outcome; the strongest is {top}."
-                if top else "No variable passed the significance and effect-size gates.")
+    if top:
+        headline = f"{facts.n_drivers} independent drivers are associated with the outcome; the strongest is {top}."
+    elif correlations:
+        headline = "The strongest relationships between columns are listed below."
+    else:
+        headline = "No variable passed the significance and effect-size gates."
     return {"headline": headline, "sections": sections, "caveats": list(facts.caveats)}

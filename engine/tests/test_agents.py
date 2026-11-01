@@ -367,3 +367,11 @@ def test_cli_writes_a_json_report_without_llm(tmp_path, dataset, capsys, monkeyp
     printed = capsys.readouterr().out
     assert "verification: passed" in printed and "narrative: template" in printed
     assert json.loads(out.read_text(encoding="utf-8"))["verification"]["status"] == "passed"
+
+
+def test_no_target_mode_gives_a_verified_correlation_report(dataset):
+    """Found by the API tests in step 11: the facts sheet assumed an outcome rate always exists."""
+    report = run_analysis(dataset.data.head(2000), target=None)
+    assert report.target is None and report.verification["status"] == "passed"
+    assert report.findings["findings"] and all(f["kind"] == "correlation" for f in report.findings["findings"])
+    assert any("Spearman correlation" in s["text"] for s in report.narrative["sections"])

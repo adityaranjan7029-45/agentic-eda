@@ -76,8 +76,10 @@ def build_facts(prep: PreprocessResult, pack: FintechReport, max_findings: int =
     findings = {f"F{i}": f for i, f in enumerate(report.findings[:max_findings], 1)}
     finding_lines = {fid: _finding_line(fid, f) for fid, f in findings.items()}
     lines = [
-        f"DATASET: {report.n_rows:,} rows; target {report.target}; overall rate {pct(report.target_rate)}; "
-        f"{report.n_tested} columns tested; {len(report.findings)} findings passed the false-discovery "
+        f"DATASET: {report.n_rows:,} rows; "
+        + (f"target {report.target}; overall rate {pct(report.target_rate)}; " if report.target
+           else "no target column (relationships between columns only); ")
+        + f"{report.n_tested} columns tested; {len(report.findings)} findings passed the false-discovery "
         f"and effect-size gates ({n_drivers} independent drivers).",
         "",
         "FINDINGS (cite by ID):",
