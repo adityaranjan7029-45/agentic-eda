@@ -22,6 +22,21 @@ jobs:
         # 3.14: what we develop on locally.
         python-version: ["3.12", "3.14"]
 
+    # A real Postgres for the API tests (JSONB, migrations, cascades). Throwaway, per job.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: eda
+          POSTGRES_PASSWORD: eda
+          POSTGRES_DB: eda_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U eda"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,8 +47,10 @@ jobs:
         run: uv venv -p ${{ matrix.python-version }} .venv
 
       - name: Install dependencies
-        run: uv pip install -p .venv/bin/python -r requirements.txt -e "engine[dev]"
+        run: uv pip install -p .venv/bin/python -r requirements.txt -e "engine[dev]" -e "api[dev]"
 
       - name: Run tests
-        run: .venv/bin/python -m pytest -q
-        
+        env:
+          TEST_DATABASE_URL: postgresql://eda:eda@localhost:5432/eda_test
+        run: .venv/bin/python -m pytest -q -rs
+
