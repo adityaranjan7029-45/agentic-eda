@@ -284,7 +284,7 @@ def test_inline_runs_interrupted_by_a_restart_are_marked_failed(base_settings):
     Base.metadata.create_all(engine)
     sessions = make_sessionmaker(engine)
     with sessions() as s:
-        user = User(email="alice@example.com")
+        user = User(auth_provider="dev", auth_subject="alice@example.com", email="alice@example.com")
         s.add(user)
         s.flush()
         s.add(Run(user_id=user.id, status="running", stage="analyse", filename="x.csv", size_bytes=1))

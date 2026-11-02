@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
@@ -28,9 +28,14 @@ class Base(DeclarativeBase):
 
 
 class User(Base):
+    """A person, identified by their login provider's account id (emails can change)."""
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("auth_provider", "auth_subject", name="uq_users_identity"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    auth_provider: Mapped[str] = mapped_column(String(32))        # "github", or "dev" for the dev header
+    auth_subject: Mapped[str] = mapped_column(String(255))        # the provider's account id
+    email: Mapped[str | None] = mapped_column(String(320), index=True)
+    name: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     runs: Mapped[list[Run]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
