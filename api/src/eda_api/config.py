@@ -38,6 +38,13 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Login (step 13). The Next.js app signs a short-lived token for each API call with this
+    # shared secret; the API verifies it. Required in prod, where the dev header is disabled.
+    api_jwt_secret: SecretStr | None = None
+    jwt_issuer: str = "agentic-eda-web"
+    jwt_audience: str = "agentic-eda-api"
+    jwt_max_lifetime_seconds: int = Field(600, ge=60, le=3600)   # tokens living longer are refused
+
     # Job queue. Set REDIS_URL for Redis mode (API + separate `eda-worker`);
     # leave it empty for inline mode (jobs run in a background thread in the API).
     redis_url: str | None = None
@@ -61,9 +68,17 @@ class Settings(BaseSettings):
     def _production_rules(self) -> Settings:
         if self.app_env == "prod" and not self.database_url.startswith("postgresql"):
             raise ValueError("APP_ENV=prod requires a Postgres DATABASE_URL")
+        if self.app_env == "prod" and not self._long(self.api_jwt_secret):
+            raise ValueError("APP_ENV=prod requires API_JWT_SECRET (at least 32 characters)")
+        if self.api_jwt_secret and not self._long(self.api_jwt_secret):
+            raise ValueError("API_JWT_SECRET must be at least 32 characters")
         if self.redis_url and not (self.secret_key and len(self.secret_key.get_secret_value()) >= 32):
             raise ValueError("Redis mode needs SECRET_KEY (at least 32 characters) to encrypt users' keys")
         return self
+
+    @staticmethod
+    def _long(secret: SecretStr | None) -> bool:
+        return bool(secret and len(secret.get_secret_value()) >= 32)
 
     @property
     def queue_mode(self) -> str:
