@@ -249,3 +249,17 @@ def test_numeric_bins_are_in_natural_order_with_missing_last():
     assert woe[-1]["bin"] == "missing"
     lows = [float(w["bin"].split(" to ")[0].replace(",", "")) for w in woe[:-1]]
     assert lows == sorted(lows) and len(lows) == 10    # text sorting would put "1,000" before "200"
+
+
+def test_ks_curve_and_distribution_for_the_strongest_numeric_variables(credit):
+    _, report = credit
+    detailed = [v for v in report.variable_strength if v.ks_curve]
+    assert 1 <= len(detailed) <= 10 and all(v.ks is not None for v in detailed)
+    v = detailed[0]
+    bads, goods = [p["bad"] for p in v.ks_curve], [p["good"] for p in v.ks_curve]
+    assert bads == sorted(bads) and goods == sorted(goods)              # cumulative: never decreases
+    assert bads[-1] == goods[-1] == 1.0
+    assert max(abs(b - g) for b, g in zip(bads, goods)) == pytest.approx(v.ks, abs=0.03)
+    assert sum(b["bad"] for b in v.distribution) == pytest.approx(1.0, abs=0.002)
+    assert sum(b["good"] for b in v.distribution) == pytest.approx(1.0, abs=0.002)
+    assert "ks_curve" in v.to_dict() and "ks_curve" not in report.variable_strength[-1].to_dict()

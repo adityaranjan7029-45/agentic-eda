@@ -44,8 +44,16 @@ def json_safe(value):
 
 
 def build_llm(settings: Settings, user_keys: dict[str, str]) -> LLMClient | None:
-    ring = KeyRing(server={p: ApiKey(k) for p, k in settings.server_llm_keys().items()})
-    ring = ring.with_user_keys({p: k for p, k in user_keys.items() if k and k.strip()})
+    """The user's own keys if they gave any (and only those), otherwise the server's.
+
+    "Theirs only": a run with a user key never falls back to our keys. If their key
+    fails, the report is still produced, written by the template instead of the LLM,
+    and the run's notes say why, so nobody's quota is used without them knowing."""
+    user = {p: k.strip() for p, k in user_keys.items() if k and k.strip()}
+    if user:
+        ring = KeyRing().with_user_keys(user)
+    else:
+        ring = KeyRing(server={p: ApiKey(k) for p, k in settings.server_llm_keys().items()})
     if not any(ring.get(p) for p in ("groq", "cerebras", "openrouter")):
         return None
     return LLMClient(ring, budget=TokenBudget(settings.run_token_budget))

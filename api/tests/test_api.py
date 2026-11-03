@@ -317,3 +317,47 @@ def test_alembic_migration_matches_the_models(tmp_path, monkeypatch):
     command.downgrade(cfg, "base")
     assert set(inspect(engine).get_table_names()) == {"alembic_version"}
     engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Step 14: "your key only" and the sample-dataset demo
+# ---------------------------------------------------------------------------
+
+def test_a_users_own_key_replaces_all_server_keys(settings):
+    configured = settings.model_copy(update={"groq_api_key": SecretStr("gsk_server"),
+                                             "openrouter_api_key": SecretStr("sk-or-server")})
+    llm = service.build_llm(configured, {"groq": "gsk_user"})
+    assert llm.keys.source("groq") == "user"
+    assert llm.keys.get("openrouter") is None and llm.keys.get("cerebras") is None   # no silent fallback
+    assert service.build_llm(configured, {"groq": "   "}).keys.source("groq") == "server"  # blank = not given
+
+
+def test_rejected_user_key_still_gives_a_report_and_says_why(client, credit_csv, settings, monkeypatch):
+    calls = []
+
+    def provider(request):
+        calls.append((request.url.host, request.headers["authorization"]))
+        return httpx.Response(401, json={"error": {"message": "invalid api key"}})
+
+    # Server keys exist for two providers: the old fallback would have used them.
+    configured = settings.model_copy(update={"groq_api_key": SecretStr("gsk_server"),
+                                             "openrouter_api_key": SecretStr("sk-or-server")})
+    real = service.LLMClient
+    monkeypatch.setattr(service, "LLMClient",
+                        lambda *a, **k: real(*a, transport=httpx.MockTransport(provider), **k))
+    with TestClient(create_app(configured)) as c:
+        run = c.post("/runs", files={"file": ("c.csv", io.BytesIO(credit_csv), "text/csv")},
+                     data={"target": "default_flag"}, headers={**ALICE, "X-Groq-Key": "gsk_bad_user_key"}).json()
+    assert run["status"] == "succeeded" and run["narrative_source"] == "template"
+    assert run["key_source"] == "none" and run["tokens_used"] == 0
+    assert set(calls) == {("api.groq.com", "Bearer gsk_bad_user_key")}   # only the user's key, nothing else
+    assert any("key rejected (401)" in note for note in run["report"]["notes"])
+
+
+def test_sample_run_needs_no_upload(client, fast_engine):
+    response = client.post("/runs/sample", headers=ALICE)
+    assert response.status_code == 202
+    run = response.json()
+    assert run["filename"] == "sample_credit_applications.csv" and run["target"] == "default_flag"
+    assert run["n_rows"] >= 3000 and run["n_columns"] > 100
+    assert client.post("/runs/sample").status_code == 401

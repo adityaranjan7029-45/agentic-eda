@@ -7,6 +7,8 @@ budget and fallback logic are exercised for real while replies are scripted.
 import json
 
 import httpx
+import numpy as np
+import pandas as pd
 import pytest
 
 from eda_engine.agents import (
@@ -88,23 +90,86 @@ def test_small_datasets_get_a_caveat():
 # ---------------------------------------------------------------------------
 
 def test_charts_are_vega_lite_built_from_evidence(analysed):
-    _, pack, facts, charts = analysed
+    prep, pack, facts, _ = analysed
+    charts = build_charts(facts, pack, prep.data)
     assert [c.id for c in charts] == [f"C{i}" for i in range(1, len(charts) + 1)]
     assert all(c.spec["$schema"].startswith("https://vega.github.io/schema/vega-lite/") for c in charts)
-    cs = next(c for c in charts if c.finding_id == fid_of(facts, "credit_score"))
+    trend = next(c for c in charts if c.finding_id == fid_of(facts, "credit_score") and c.kind == "rate_trend")
     woe = next(v for v in pack.variable_strength if v.column == "credit_score").woe
-    assert [r["rate"] for r in cs.spec["data"]["values"]] == [w["bad_rate"] for w in woe]
-    assert cs.spec["layer"][1]["encoding"]["y"]["datum"] == pack.findings.target_rate
+    assert [r["rate"] for r in trend.spec["data"]["values"]] == [w["bad_rate"] for w in woe]
+    assert trend.spec["layer"][0]["mark"]["type"] == "line"                 # ordered bands: a trend line
+    assert trend.spec["layer"][-1]["encoding"]["y"]["datum"] == pack.findings.target_rate
     json.dumps([c.to_dict() for c in charts])
 
 
-def test_categorical_finding_gets_a_rate_by_group_chart(analysed):
-    _, pack, facts, charts = analysed
-    assert len(charts) == 9 and charts[-1].kind == "variable_strength"   # 8 finding charts + IV overview
-    every = build_charts(facts, pack, max_charts=20)
-    term = next(c for c in every if c.finding_id == fid_of(facts, "loan_term_months"))
-    assert term.kind == "rate_by_group"                                   # 36 vs 60 months: 2 groups
-    assert {r["group"] for r in term.spec["data"]["values"]} == {"36", "60"}
+def test_every_chart_kind_is_produced_for_a_credit_dataset(analysed):
+    prep, pack, facts, _ = analysed
+    kinds = [c.kind for c in build_charts(facts, pack, prep.data)]
+    assert {"rate_trend", "ks_curve", "distribution", "correlation_matrix", "variable_strength"} <= set(kinds)
+    assert kinds.count("ks_curve") == 2 and kinds.count("distribution") == 2   # top two numeric drivers
+    assert kinds[-1] == "variable_strength"
+
+
+def test_ks_chart_marks_the_ks_statistic(analysed):
+    prep, pack, facts, _ = analysed
+    ks_chart = next(c for c in build_charts(facts, pack, prep.data) if c.kind == "ks_curve")
+    variable = facts.findings[ks_chart.finding_id].column
+    v = next(v for v in pack.variable_strength if v.column == variable)
+    gap = ks_chart.spec["layer"][1]["data"]["values"][0]
+    widest = max(abs(p["bad"] - p["good"]) for p in v.ks_curve)
+    assert gap["high"] - gap["low"] == pytest.approx(widest)               # marked exactly at the widest gap
+    assert gap["high"] - gap["low"] == pytest.approx(v.ks, abs=0.03)     # which is the KS statistic
+    assert gap["label"] == f"KS {v.ks:.2f}"
+    shares = [r["share"] for r in ks_chart.spec["layer"][0]["data"]["values"]]
+    assert min(shares) >= 0 and max(shares) == pytest.approx(1.0)
+
+
+def test_distribution_shares_sum_to_one_per_outcome(analysed):
+    prep, pack, facts, _ = analysed
+    chart = next(c for c in build_charts(facts, pack, prep.data) if c.kind == "distribution")
+    totals = {}
+    for row in chart.spec["data"]["values"]:
+        totals[row["group"]] = totals.get(row["group"], 0) + row["share"]
+    assert totals == {k: pytest.approx(1.0, abs=0.002) for k in totals} and len(totals) == 2
+
+
+def test_correlation_matrix_matches_pandas_and_includes_near_duplicates(analysed):
+    prep, pack, facts, _ = analysed
+    chart = next(c for c in build_charts(facts, pack, prep.data) if c.kind == "correlation_matrix")
+    cells = {(r["a"], r["b"]): r["r"] for r in chart.spec["data"]["values"]}
+    columns = sorted({a for a, _ in cells})
+    assert all(cells[(c, c)] == 1.0 for c in columns)
+    assert all(cells[(a, b)] == cells[(b, a)] for a in columns for b in columns)
+    expected = prep.data[columns].rank().corr()                           # Spearman = correlation of ranks
+    for a in columns:
+        for b in columns:
+            assert cells[(a, b)] == pytest.approx(expected.loc[a, b], abs=0.006), (a, b)
+    assert "annual_income" in columns or "monthly_income" in columns        # near-duplicates are visible
+
+
+def test_categorical_findings_get_bars_and_no_data_means_no_heatmap(analysed):
+    _, pack, facts, _ = analysed
+    charts = build_charts(facts, pack)                                       # no data passed
+    assert "correlation_matrix" not in {c.kind for c in charts}
+    rng = np.random.default_rng(1)
+    contract = rng.choice(["month-to-month", "one year", "two year"], 3000)
+    rate = pd.Series(contract).map({"month-to-month": 0.4, "one year": 0.15, "two year": 0.05})
+    frame = pd.DataFrame({"contract": contract, "tenure": rng.normal(size=3000),
+                          "churn": (rng.random(3000) < rate).astype(int)})
+    prep = run_preprocessing(frame, infer_schema(frame, target="churn"))
+    small_pack = run_fintech_pack(prep, discover_findings(prep))
+    small_facts = build_facts(prep, small_pack)
+    bars = [c for c in build_charts(small_facts, small_pack, prep.data) if c.kind == "rate_by_group"]
+    assert bars and {r["group"] for r in bars[0].spec["data"]["values"]} == {"month-to-month", "one year", "two year"}
+
+
+def test_template_attaches_all_charts_of_a_finding(analysed):
+    prep, pack, facts, _ = analysed
+    charts = build_charts(facts, pack, prep.data)
+    template = template_narrative(facts, charts)
+    cs = fid_of(facts, "credit_score")
+    section = next(s for s in template["sections"] if s["findings"] == [cs])
+    assert section["charts"] == [c.id for c in charts if c.finding_id == cs] and len(section["charts"]) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -375,3 +440,12 @@ def test_no_target_mode_gives_a_verified_correlation_report(dataset):
     assert report.target is None and report.verification["status"] == "passed"
     assert report.findings["findings"] and all(f["kind"] == "correlation" for f in report.findings["findings"])
     assert any("Spearman correlation" in s["text"] for s in report.narrative["sections"])
+
+
+def test_iv_chart_legend_shows_suspicious_as_very_strong(analysed):
+    prep, pack, facts, _ = analysed
+    chart = next(c for c in build_charts(facts, pack, prep.data) if c.kind == "variable_strength")
+    color = chart.spec["encoding"]["color"]
+    assert "very strong (check leakage)" in color["legend"]["labelExpr"]
+    assert color["legend"]["labelLimit"] >= 200                   # long enough not to be cut off
+    assert color["scale"]["domain"][-1] == "suspicious"          # the data keeps the industry term
