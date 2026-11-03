@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { HEADER_BYTES, guessTarget, parseHeader, readHeader } from "../lib/csv";
+import { HEADER_BYTES, guessTarget, parseHeader, readHeader, uploadLimitMb } from "../lib/csv";
 
 describe("parseHeader", () => {
   it("reads a plain header row and stops at the line break", () => {
@@ -39,5 +39,15 @@ describe("guessTarget", () => {
   });
   it("returns nothing when no column looks like an outcome", () => {
     expect(guessTarget(["a", "b", "c"])).toBe("");
+  });
+});
+
+describe("uploadLimitMb", () => {
+  it("uses the server's MAX_UPLOAD_MB", () => {
+    expect(uploadLimitMb("10")).toBe(10);
+    expect(uploadLimitMb("50")).toBe(50);
+  });
+  it("falls back to 50 when it's missing or nonsense", () => {
+    for (const raw of [undefined, "", "abc", "0", "-5", "2.5", "100000"]) expect(uploadLimitMb(raw)).toBe(50);
   });
 });

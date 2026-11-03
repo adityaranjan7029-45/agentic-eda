@@ -51,3 +51,9 @@ export function guessTarget(columns: string[]): string {
 export async function readHeader(file: Blob): Promise<string[]> {
   return parseHeader(await file.slice(0, HEADER_BYTES).text());
 }
+
+/** The upload limit to show, from the server's MAX_UPLOAD_MB (same variable the API enforces). */
+export function uploadLimitMb(raw: string | undefined, fallback = 50): number {
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 1 && value <= 500 ? value : fallback;
+}

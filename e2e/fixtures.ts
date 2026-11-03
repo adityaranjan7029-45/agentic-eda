@@ -7,7 +7,10 @@ import { test as base, expect, type BrowserContext, type Page } from "@playwrigh
 import { encode } from "@auth/core/jwt";
 import { randomInt } from "node:crypto";
 
-export const SESSION_COOKIE = "authjs.session-token"; // the http:// name; https uses a __Secure- prefix
+/** Auth.js names the cookie with a __Secure- prefix on https (e.g. the live site). */
+export function sessionCookieName(baseURL: string): string {
+  return new URL(baseURL).protocol === "https:" ? "__Secure-authjs.session-token" : "authjs.session-token";
+}
 
 export type TestUser = { id: string; name: string };
 
@@ -15,14 +18,24 @@ export async function signIn(context: BrowserContext, baseURL: string, name = "T
   const secret = process.env.E2E_AUTH_SECRET;
   if (!secret) throw new Error("Set E2E_AUTH_SECRET to the AUTH_SECRET of the web app under test");
   const id = String(randomInt(100_000_000, 999_999_999));
+  const url = new URL(baseURL);
+  const cookie = sessionCookieName(baseURL);
   const value = await encode({
     secret,
-    salt: SESSION_COOKIE,
+    salt: cookie,
     maxAge: 60 * 60,
     token: { sub: id, name, email: `e2e-${id}@example.test`, provider: "github", providerAccountId: id },
   });
   await context.addCookies([
-    { name: SESSION_COOKIE, value, domain: new URL(baseURL).hostname, path: "/", httpOnly: true, sameSite: "Lax" },
+    {
+      name: cookie,
+      value,
+      domain: url.hostname,
+      path: "/",
+      httpOnly: true,
+      secure: url.protocol === "https:",
+      sameSite: "Lax",
+    },
   ]);
   return { id, name };
 }

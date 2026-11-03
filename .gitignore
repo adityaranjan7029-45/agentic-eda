@@ -108,3 +108,9 @@ tmp/
 .venv-load/
 # local redis-server snapshot
 dump.rdb
+
+# server: remembers small/large mode (deploy/deploy.sh)
+.deploy-mode
+# size settings for the two server modes (no secrets in them)
+!deploy/small.env
+!deploy/large.env

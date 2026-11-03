@@ -8,7 +8,8 @@ import { guessTarget, readHeader } from "@/lib/csv";
 import { errorFromResponse } from "@/lib/errors";
 import { formatBytes } from "@/lib/report";
 
-export function UploadCard() {
+/** maxUploadMb comes from the server's MAX_UPLOAD_MB (smaller on the 1 GB server). */
+export function UploadCard({ maxUploadMb = 50 }: { maxUploadMb?: number }) {
   const router = useRouter();
   const input = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -24,6 +25,10 @@ export function UploadCard() {
     if (!chosen) return;
     if (!chosen.name.toLowerCase().endsWith(".csv")) {
       setError("Only .csv files are supported.");
+      return;
+    }
+    if (chosen.size > maxUploadMb * 1024 * 1024) {
+      setError(`That file is ${formatBytes(chosen.size)}; the limit on this server is ${maxUploadMb} MB.`);
       return;
     }
     const header = await readHeader(chosen);
@@ -78,7 +83,7 @@ export function UploadCard() {
         <h2 id="upload-title" className="mt-1 text-xl font-semibold tracking-tight">
           Upload a dataset
         </h2>
-        <p className="mt-1 text-sm text-slate-500">CSV up to 50 MB. The file is deleted as soon as the analysis has read it.</p>
+        <p className="mt-1 text-sm text-slate-500">CSV up to {maxUploadMb} MB. The file is deleted as soon as the analysis has read it.</p>
 
         {file ? (
           <div className="mt-5 flex items-center gap-3 rounded-xl border border-brand-200 bg-brand-50/60 p-4 dark:border-brand-700/40 dark:bg-brand-500/10">
