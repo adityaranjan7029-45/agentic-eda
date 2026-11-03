@@ -5,7 +5,7 @@
 
 **v1 live demo (prototype):** https://agentic-eda-aie24xzwwqtbgf4rqkdezi.streamlit.app/ (may take a minute to wake up)
 
-**Status:** v2 backend complete (engine, evaluation, LLM layer, agents, API, job queue). Auth, Next.js frontend, Docker Compose and deployment are in progress. Full step-by-step history: PRs #1–#12.
+**Status:** v2 runs end to end: engine, evaluation, LLM layer, agents, API, job queue, GitHub login, Next.js frontend, and the whole stack in Docker Compose with browser and load tests in CI. Public deployment is the last step in progress. Full step-by-step history: PRs #1–#16.
 
 ## v2 at a glance
 
@@ -18,7 +18,7 @@ v1 asked the LLM to find patterns, write chart code and judge itself. v2 inverts
 | Numbers in the report | whatever the LLM wrote | **deterministic Critic**: every number must match computed evidence for that variable; failing sentences are revised or removed |
 | Charts | LLM-written matplotlib, sandboxed | Vega-Lite specs built from evidence (no code execution, zero tokens) |
 | LLM cost | unbounded | hard **10k-token budget per run**, Groq → Cerebras → OpenRouter fallback, bring-your-own-key |
-| Proof it works | manual checks | synthetic data with a planted answer key + **400+ tests** in CI on real Postgres and Redis |
+| Proof it works | manual checks | synthetic data with a planted answer key + **440+ tests** in CI on real Postgres and Redis, **Playwright** end-to-end tests and a **Locust** load test against the Docker stack |
 
 ## Proof: held-out benchmark
 
@@ -53,7 +53,19 @@ flowchart LR
 - **Bring your own key:** a user's LLM key is used for one run, travels to the worker Fernet-encrypted with a 10-minute expiry, and never reaches the database, logs or disk.
 - **Reliable jobs:** BLMOVE processing list + leases (dead workers detected), live progress over Server-Sent Events, replayable after reconnects.
 
-## Run v2 locally
+## Run v2 with Docker (everything)
+
+```powershell
+# one-time: secrets in .env and the GitHub login in web/.env.local (see docs/docker.md)
+docker compose up --build -d --wait     # web, api, 2 workers, Postgres, Redis, migrations
+start http://localhost:3000
+```
+
+Under load (40 simultaneous users, 2 workers on 2 vCPUs) the API answers reads in 13–23 ms
+median with **0 failed requests**; analyses are limited by worker CPU (~36 per minute).
+The load and browser tests found and fixed three real problems: see [`docs/load-test.md`](docs/load-test.md).
+
+## Run v2 locally (development)
 
 ```bash
 uv venv && uv pip install -e "engine[dev]" -e "api[dev]"
@@ -67,7 +79,11 @@ uvicorn eda_api.main:app --reload                     # API docs at http://local
 |---|---|
 | `engine/` | the analysis library: synthetic data, roles, profiler, preprocessing, findings, fintech pack, evaluation, LLM layer, agents |
 | `api/` | FastAPI app, Postgres models + Alembic migrations, job queue (inline / Redis), `eda-worker` |
-| `docs/` | held-out benchmark results |
+| `web/` | Next.js frontend: GitHub login, API proxy, upload, live progress, reports with Vega-Lite charts |
+| `docker/`, `docker-compose.yml` | images for the API/worker and the website, and the full stack |
+| `e2e/` | Playwright tests: a real browser against the running stack |
+| `loadtest/` | Locust load test with pass/fail thresholds |
+| `docs/` | benchmark, Docker guide, load-test results |
 | `app/`, `src/` | v1 prototype (Streamlit + LangGraph), kept for comparison |
 
 ---

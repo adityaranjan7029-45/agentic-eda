@@ -100,3 +100,11 @@ tmp/
 
 # local dev database (eda-api with SQLite)
 *.db
+
+# Docker Compose (step 15): real secrets live in .env (ignored above); the template is committed
+!.env.docker.example
+!web/.env.example
+# load-test tools venv
+.venv-load/
+# local redis-server snapshot
+dump.rdb

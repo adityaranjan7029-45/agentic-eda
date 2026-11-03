@@ -31,20 +31,19 @@ from eda_api.auth import current_user, get_session
 from eda_api.config import Settings, get_settings
 from eda_api.db import Base, Run, User, make_engine, make_sessionmaker
 from eda_api.schemas import Health, RunDetail, RunList, RunSummary
-from eda_api.jobs import FINAL_STATUSES, InlineBackend, RedisBackend, event
+from eda_api.jobs import FINAL_STATUSES, MAX_BLOCK_SECONDS, InlineBackend, RedisBackend, connect_redis, event
 from eda_api.service import ACTIVE, accept_run, process_run
 from eda_api.uploads import UploadRejected, purge_stale_uploads
 
 log = logging.getLogger("eda_api")
 
 
-SSE_WAIT_MS = 15_000     # how long one read waits for new events before sending a keep-alive
+SSE_WAIT_MS = MAX_BLOCK_SECONDS * 1000   # how long one read waits for new events before a keep-alive
 
 
 def make_backend(settings: Settings, sessions):
     if settings.queue_mode == "redis":
-        import redis
-        return RedisBackend(redis.Redis.from_url(settings.redis_url), settings.secret_key.get_secret_value(),
+        return RedisBackend(connect_redis(settings.redis_url), settings.secret_key.get_secret_value(),
                             settings.key_handover_seconds)
     return InlineBackend(lambda job, secrets, publish: process_run(sessions, settings, job, secrets, publish),
                          workers=max(1, settings.inline_workers), synchronous=settings.inline_workers == 0)

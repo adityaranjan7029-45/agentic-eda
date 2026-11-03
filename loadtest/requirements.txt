@@ -1,0 +1,4 @@
+# Load-test tools only (not part of the app). Install in their own venv:
+#   uv venv .venv-load; uv pip install -p .venv-load -r loadtest/requirements.txt
+locust==2.46.7
+pyjwt==2.15.1

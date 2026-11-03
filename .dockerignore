@@ -1,0 +1,25 @@
+# Keep the build context small and secret-free.
+**/.git
+**/.venv
+**/.venv*
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+**/.next
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!web/.env.example
+**/*.db
+reports/
+data/
+docs/
+tests/
+src/
+app/
+e2e/
+loadtest/
+**/tests/
+BUILD_LOG.md
+*.ipynb

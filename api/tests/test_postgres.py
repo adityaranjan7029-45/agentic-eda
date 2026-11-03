@@ -75,3 +75,50 @@ def test_full_run_on_postgres_stores_jsonb_and_cascades(migrated, tmp_path, monk
         with engine.connect() as conn:
             assert conn.scalar(text("SELECT count(*) FROM reports")) == 0
         engine.dispose()
+
+
+def test_simultaneous_uploads_cannot_exceed_the_active_run_limit(migrated, tmp_path):
+    """Six uploads from one user at the same instant: exactly max_active_runs are accepted.
+
+    Without the row lock in accept_run, each request counts "0 active" before any has
+    committed, and all six start (found by the end-to-end test in step 15).
+    """
+    import threading
+
+    from eda_api.config import Settings
+    from eda_api.db import Run, User, make_engine, make_sessionmaker
+    from eda_api.service import accept_run
+    from eda_api.uploads import UploadRejected
+
+    settings = Settings(_env_file=None, app_env="test", database_url=migrated[0], upload_dir=tmp_path,
+                        max_active_runs=2)
+    engine = make_engine(migrated[0])
+    sessions = make_sessionmaker(engine)
+    with sessions() as session:
+        user = User(auth_provider="dev", auth_subject="race@example.com", email="race@example.com")
+        session.add(user)
+        session.commit()
+    csv = b"a,b\n" + b"".join(f"{i},{i % 3}\n".encode() for i in range(50))
+    barrier, outcomes = threading.Barrier(6), []
+
+    def upload():
+        with sessions() as session:
+            me = session.get(User, user.id)
+            barrier.wait()
+            try:
+                accept_run(session, me, io.BytesIO(csv), "r.csv", None, settings)
+                outcomes.append("accepted")
+            except UploadRejected as exc:
+                outcomes.append(exc.status_code)
+
+    threads = [threading.Thread(target=upload) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert sorted(outcomes, key=str) == [429] * 4 + ["accepted"] * 2
+    with sessions() as session:
+        assert session.query(Run).filter_by(user_id=user.id).count() == 2
+        session.delete(session.get(User, user.id))
+        session.commit()
+    engine.dispose()

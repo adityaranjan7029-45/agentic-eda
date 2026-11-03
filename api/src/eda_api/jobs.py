@@ -30,6 +30,10 @@ from dataclasses import asdict, dataclass
 from cryptography.fernet import Fernet, InvalidToken
 
 QUEUE, PROCESSING, LEASES = "eda:queue", "eda:processing", "eda:leases"
+# Longest a single blocking Redis read waits (XREAD for live progress, BLMOVE for the worker).
+# The client's socket timeout must be longer, or a quiet stream fails mid-wait.
+MAX_BLOCK_SECONDS = 15
+REDIS_SOCKET_TIMEOUT_SECONDS = MAX_BLOCK_SECONDS + 15
 EVENTS_TTL_SECONDS = 3600
 FINAL_STATUSES = ("succeeded", "failed")
 
@@ -105,6 +109,18 @@ class InlineBackend:
 # ---------------------------------------------------------------------------
 # Redis backend
 # ---------------------------------------------------------------------------
+
+def connect_redis(url: str):
+    """A Redis client whose socket timeout outlasts every blocking read we make.
+
+    redis-py 8 defaults to a 5-second socket timeout, which would cut a 15-second
+    XREAD BLOCK short and crash the progress stream while a run waits in the queue.
+    """
+    import redis
+
+    return redis.Redis.from_url(url, socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS, socket_connect_timeout=5,
+                                health_check_interval=30)
+
 
 def fernet_for(secret: str) -> Fernet:
     """Any long secret string -> a valid Fernet key (32 bytes, base64)."""
