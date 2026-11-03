@@ -5,6 +5,7 @@
 #   ./deploy/deploy.sh large    4 GB VM: 2 workers, 50 MB uploads
 #   ./deploy/deploy.sh          redeploy in the current mode (e.g. after a merge to main)
 #   ./deploy/deploy.sh status   show what's running and the current mode
+#   ./deploy/deploy.sh logs [service...]   follow the logs (e.g. logs web caddy); Ctrl+C to stop
 #
 # Rollback: IMAGE_TAG=<commit sha> ./deploy/deploy.sh   (images are tagged with each commit)
 # First run asks a few questions and writes .env (secrets, mode 600). Safe to re-run.
@@ -21,13 +22,18 @@ secret() { openssl rand -hex 32; }
 
 mode="${1:-$(cat "$MODE_FILE" 2>/dev/null || echo small)}"
 
+current_env="deploy/$(cat "$MODE_FILE" 2>/dev/null || echo small).env"
 if [ "$mode" = "status" ]; then
   echo "mode: $(cat "$MODE_FILE" 2>/dev/null || echo 'not deployed yet')"
-  "${COMPOSE[@]}" --env-file "deploy/$(cat "$MODE_FILE" 2>/dev/null || echo small).env" ps
+  "${COMPOSE[@]}" --env-file "$current_env" ps
   free -h | head -2
   exit 0
 fi
-case "$mode" in small | large) ;; *) fail "unknown mode '$mode' (use small, large or status)" ;; esac
+if [ "$mode" = "logs" ]; then
+  shift
+  exec "${COMPOSE[@]}" --env-file "$current_env" logs -f --tail 100 "$@"
+fi
+case "$mode" in small | large) ;; *) fail "unknown mode '$mode' (use small, large, status or logs)" ;; esac
 
 # --- 1. settings and secrets (first run only) ---------------------------------------
 if [ ! -f "$ENV_FILE" ]; then

@@ -15,10 +15,10 @@ the server only downloads them, so it never needs memory to build anything.
 
 | Mode | VM size | Workers | Max upload | Max rows / columns | Cost |
 |---|---|---|---|---|---|
-| `small` | B2ats_v2 (2 vCPU, 1 GB) + 2 GB swap | 1 | 10 MB | 100,000 / 100 | free tier |
+| `small` | B2ats_v2 (2 vCPU, 1 GB) + 2 GB swap | 1 | 10 MB | 100,000 / 200 | free tier |
 | `large` | B2als_v2 or B2s (2 vCPU, 4 GB) | 2 | 50 MB | 500,000 / 500 | credit, only while resized |
 
-Measured: a 10 MB file peaks at about 360 MB of memory, a 49 MB file at about 1 GB.
+Measured: a 10 MB file peaks at about 360 MB of memory (100,000 rows × 12 columns, or 7,000 rows × 200 columns), a 49 MB file at about 1 GB. The sample credit dataset (122 columns) must fit every mode; `api/tests/test_deploy_modes.py` checks it.
 
 ## One-time setup
 
@@ -95,7 +95,7 @@ certificate and checks `https://eda.<your-domain>` answers.
 |---|---|
 | Update after a merge to `main` | `./deploy/deploy.sh` (keeps the current mode) |
 | Status, mode, memory | `./deploy/deploy.sh status` |
-| Logs | `docker compose -f deploy/compose.yml logs -f --tail 100 api worker web caddy` |
+| Logs (Ctrl+C to stop) | `./deploy/deploy.sh logs` or e.g. `./deploy/deploy.sh logs web caddy` |
 | Roll back to an earlier version | `IMAGE_TAG=<commit sha> ./deploy/deploy.sh` |
 | Backup now | `./deploy/backup.sh` (also runs nightly at 03:30, keeps 7 in `~/backups`) |
 
@@ -183,8 +183,10 @@ chat.<your-domain> {
 
 | Symptom | Fix |
 |---|---|
-| `deploy.sh` stops at "didn't answer over HTTPS" | DNS not pointing at the VM yet (`nslookup`), or port 80/443 closed in the Azure network settings; `docker compose -f deploy/compose.yml logs caddy` |
+| First deploy prints `curl: (35) ... tlsv1 alert internal error` once or twice, then "Live" | normal: Caddy was still getting the HTTPS certificate |
+| `deploy.sh` stops at "didn't answer over HTTPS" | DNS not pointing at the VM yet (`nslookup`), or port 80/443 closed in the Azure network settings; `./deploy/deploy.sh logs caddy` |
+| Sign-in shows "Server error: problem with the server configuration" | `./deploy/deploy.sh logs web`. `incorrect_client_credentials` = wrong GitHub client secret: generate a new one, fix `AUTH_GITHUB_SECRET` in `.env` (no spaces), run `./deploy/deploy.sh` |
 | Pull fails: `denied` / `unauthorized` | the GHCR packages are still private (step 1) |
-| GitHub login says "redirect_uri is not associated" | the OAuth app's callback URL doesn't match `https://eda.<your-domain>/api/auth/callback/github` exactly |
+| GitHub says "redirect_uri is not associated" | the OAuth app's callback URL doesn't match `https://eda.<your-domain>/api/auth/callback/github` exactly |
 | A run fails with "the server restarted" | the worker ran out of memory: use a smaller file, or switch to large mode |
 | Site slow after a period of heavy use | burstable CPU credits spent; they refill while idle, or resize up |
