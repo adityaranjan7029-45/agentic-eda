@@ -58,6 +58,7 @@ class FintechConfig:
     iv_bins: int = 10
     woe_smoothing: float = 0.5
     proxy_threshold: float = 0.2   # association strength (Cramer's V / eta / |Spearman|) that flags a proxy
+    detailed_variables: int = 10   # strongest numeric variables that get a KS curve and distribution
 
 
 @dataclass(frozen=True)
@@ -67,10 +68,18 @@ class VariableStrength:
     band: str
     ks: float | None
     woe: list[dict]   # per bin: {"bin", "count", "bad_rate", "woe"}
+    # For the strongest numeric variables only (charts): aggregates, never raw rows.
+    ks_curve: list[dict] | None = None       # {"value", "bad", "good"}: cumulative shares up to value
+    distribution: list[dict] | None = None   # {"start", "end", "bad", "good"}: share of each class per bin
 
     def to_dict(self) -> dict:
-        return {"column": self.column, "iv": round(self.iv, 4), "band": self.band,
-                "ks": None if self.ks is None else round(self.ks, 4), "woe": self.woe}
+        out = {"column": self.column, "iv": round(self.iv, 4), "band": self.band,
+               "ks": None if self.ks is None else round(self.ks, 4), "woe": self.woe}
+        if self.ks_curve is not None:
+            out["ks_curve"] = self.ks_curve
+        if self.distribution is not None:
+            out["distribution"] = self.distribution
+        return out
 
 
 @dataclass(frozen=True)
@@ -135,6 +144,47 @@ def information_value(x: pd.Series, y: pd.Series, role: ColumnRole, cfg: Fintech
         for i, label in enumerate(labels)
     ]
     return iv, detail
+
+
+def _sig(v: float) -> float:
+    return float(f"{v:.4g}")
+
+
+def ks_curve(x: pd.Series, y: pd.Series, points: int = 50) -> list[dict] | None:
+    """Cumulative share of bads and goods with value <= v, at `points` quantiles of x.
+    The biggest vertical gap between the two curves is the KS statistic."""
+    mask = x.notna()
+    values = x[mask].astype(float).to_numpy()
+    labels = np.asarray(y[mask], dtype=int)
+    bad, good = np.sort(values[labels == 1]), np.sort(values[labels == 0])
+    if len(bad) < 2 or len(good) < 2:
+        return None
+    grid = np.unique(np.quantile(values, np.linspace(0, 1, points + 1)))
+    cum_bad = np.searchsorted(bad, grid, side="right") / len(bad)
+    cum_good = np.searchsorted(good, grid, side="right") / len(good)
+    return [{"value": _sig(v), "bad": round(float(b), 4), "good": round(float(g), 4)}
+            for v, b, g in zip(grid, cum_bad, cum_good)]
+
+
+def distribution_by_class(x: pd.Series, y: pd.Series, bins: int = 20) -> list[dict] | None:
+    """Histogram of x for each class, as shares within the class (so different class sizes
+    compare fairly). Range is the 1st-99th percentile; values outside are counted in the end bins."""
+    mask = x.notna()
+    values = x[mask].astype(float).to_numpy()
+    labels = np.asarray(y[mask], dtype=int)
+    if (labels == 1).sum() < 2 or (labels == 0).sum() < 2:
+        return None
+    lo, hi = np.percentile(values, [1, 99])
+    if not hi > lo:
+        return None
+    edges = np.linspace(lo, hi, bins + 1)
+    clipped = np.clip(values, lo, hi)
+    out = []
+    shares = {cls: np.histogram(clipped[labels == cls], bins=edges)[0] / (labels == cls).sum() for cls in (0, 1)}
+    for i in range(bins):
+        out.append({"start": _sig(edges[i]), "end": _sig(edges[i + 1]),
+                    "bad": round(float(shares[1][i]), 4), "good": round(float(shares[0][i]), 4)})
+    return out
 
 
 def ks_statistic(x: pd.Series, y: pd.Series) -> float | None:
@@ -266,6 +316,14 @@ def run_fintech_pack(prep: PreprocessResult, findings: FindingsReport,
             ks = ks_statistic(df[info.name].astype(float), y) if info.role == ColumnRole.NUMERIC else None
             strengths.append(VariableStrength(info.name, iv, iv_band(iv), ks, woe))
         strengths.sort(key=lambda v: (-v.iv, v.column))
+        # Curves and distributions for the strongest numeric variables (chart data, aggregates only).
+        detailed = 0
+        for i, v in enumerate(strengths):
+            if v.ks is None or detailed >= cfg.detailed_variables:
+                continue
+            x = df[v.column].astype(float)
+            strengths[i] = replace(v, ks_curve=ks_curve(x, y), distribution=distribution_by_class(x, y))
+            detailed += 1
         # A warning, not critical: very strong applicant variables (credit scores)
         # can legitimately exceed 0.5. Confirmed leakage was already excluded upstream.
         for v in strengths:

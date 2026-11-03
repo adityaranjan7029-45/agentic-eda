@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  /* Fonts ship with the app (@fontsource-variable): no build-time download, no third-party requests. */
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --color-brand-50: #eef4ff;
+  --color-brand-100: #dbe6ff;
+  --color-brand-200: #bcd0ff;
+  --color-brand-400: #6a95ff;
+  --color-brand-500: #3d6bff;
+  --color-brand-600: #2650f0;
+  --color-brand-700: #1d3fd0;
+  --color-brand-900: #142a7a;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  @apply bg-slate-50 font-sans text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+}
+
+/* Small design system: Tailwind v4 custom utilities (they can build on each other). */
+@utility card {
+  @apply rounded-2xl border border-slate-200/80 bg-white p-6 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.12)]
+    dark:border-slate-800 dark:bg-slate-900 dark:shadow-none;
+}
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition
+    focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500
+    disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-sm shadow-brand-600/30 hover:from-brand-600 hover:to-brand-700;
+}
+
+@utility btn-secondary {
+  @apply btn border border-slate-300 bg-white text-slate-800 hover:border-slate-400 hover:bg-slate-50
+    dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800;
+}
+
+@utility btn-ghost {
+  @apply btn px-2.5 py-1.5 font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-white;
+}
+
+@utility input {
+  @apply w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm shadow-sm
+    focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-100
+    dark:border-slate-700 dark:bg-slate-900 dark:focus:ring-brand-900;
+}
+
+@utility label {
+  @apply mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300;
+}
+
+@utility eyebrow {
+  @apply text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400;
+}
+
+@utility pill {
+  @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+}
+
+/* Subtle dotted grid for hero backgrounds */
+@utility bg-grid {
+  background-image: radial-gradient(rgba(148, 163, 184, 0.25) 1px, transparent 1px);
+  background-size: 22px 22px;
+}

@@ -134,7 +134,7 @@ def _analyse(state: RunState) -> RunState:
     prep = run_preprocessing(state["data"], state["schema"], state["plan"])
     pack = run_fintech_pack(prep, discover_findings(prep, cfg.findings))
     facts = build_facts(prep, pack)
-    charts = build_charts(facts, pack)
+    charts = build_charts(facts, pack, prep.data)
     state["emit"]("analyse", f"{len(pack.findings.findings)} findings, {len(charts)} charts")
     return {"prep": prep, "pack": pack, "facts": facts, "charts": charts}
 

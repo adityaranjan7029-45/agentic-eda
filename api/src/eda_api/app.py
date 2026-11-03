@@ -3,6 +3,7 @@
 Endpoints:
     GET    /health            API, database and queue status
     POST   /runs              upload a CSV (+ optional target) -> 202, run queued
+    POST   /runs/sample       analyse a generated synthetic credit dataset (demo, nothing to upload)
     GET    /runs              your run history, newest first
     GET    /runs/{id}         one run (status, current stage) with its report when done
     GET    /runs/{id}/events  live progress (Server-Sent Events), replayable from the start
@@ -11,8 +12,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -108,8 +111,11 @@ def create_app(settings: Settings | None = None, backend=None) -> FastAPI:
         name = file.filename or "upload.csv"
         if not name.lower().endswith((".csv", ".txt")):
             raise UploadRejected("only .csv files are supported", 415)
-        user_keys = {"groq": x_groq_key, "cerebras": x_cerebras_key, "openrouter": x_openrouter_key}
-        run, job = accept_run(session, user, file.file, name, target, settings)
+        return _queue(session, user, file.file, name, target,
+                      {"groq": x_groq_key, "cerebras": x_cerebras_key, "openrouter": x_openrouter_key})
+
+    def _queue(session: Session, user: User, source, name: str, target: str | None, user_keys: dict) -> RunDetail:
+        run, job = accept_run(session, user, source, name, target, settings)
         try:
             backend.enqueue(job, {p: k for p, k in user_keys.items() if k})
         except Exception:
@@ -121,6 +127,22 @@ def create_app(settings: Settings | None = None, backend=None) -> FastAPI:
             raise HTTPException(503, "the analysis queue is unavailable; please try again shortly") from None
         session.refresh(run)
         return _detail(run)
+
+    @app.post("/runs/sample", response_model=RunDetail, status_code=202)
+    def create_sample_run(
+        x_groq_key: str | None = Header(default=None),
+        x_cerebras_key: str | None = Header(default=None),
+        x_openrouter_key: str | None = Header(default=None),
+        user: User = Depends(current_user),
+        session: Session = Depends(get_session),
+    ):
+        """Analyse a freshly generated synthetic credit dataset: a demo with nothing to upload."""
+        from eda_engine.synth.credit import generate_credit_applications
+
+        data = generate_credit_applications(n_rows=3000, seed=secrets.randbelow(1_000_000)).data
+        source = io.BytesIO(data.to_csv(index=False).encode())
+        return _queue(session, user, source, "sample_credit_applications.csv", "default_flag",
+                      {"groq": x_groq_key, "cerebras": x_cerebras_key, "openrouter": x_openrouter_key})
 
     @app.get("/runs", response_model=RunList)
     def list_runs(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),

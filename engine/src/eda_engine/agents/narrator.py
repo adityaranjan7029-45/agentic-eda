@@ -89,7 +89,10 @@ def normalize_narrative(raw: dict, facts: Facts, charts: list[ChartSpec]) -> dic
 
 def template_narrative(facts: Facts, charts: list[ChartSpec]) -> dict:
     """A plain report from the facts alone (no LLM). Built only from facts-sheet numbers."""
-    chart_for = {c.finding_id: c.id for c in charts if c.finding_id}
+    chart_for: dict[str, list[str]] = {}
+    for c in charts:
+        if c.finding_id:
+            chart_for.setdefault(c.finding_id, []).append(c.id)
     drivers = [(fid, f) for fid, f in facts.findings.items() if f.kind == "driver"]
     sections = []
     for fid, f in drivers[:5]:
@@ -104,7 +107,7 @@ def template_narrative(facts: Facts, charts: list[ChartSpec]) -> dict:
         if f.confidence == "tentative":
             text += " This finding is tentative."
         sections.append({"title": f"{f.column} is associated with the outcome", "text": text,
-                         "findings": [fid], "charts": [chart_for[fid]] if fid in chart_for else []})
+                         "findings": [fid], "charts": chart_for.get(fid, [])})
     for fid in sorted(facts.lender_decisions):
         f = facts.findings[fid]
         sections.append({"title": f"{f.column} reflects the lender's view",
