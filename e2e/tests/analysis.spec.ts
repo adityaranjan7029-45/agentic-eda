@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { expect, runSample, test, watchErrors } from "../fixtures";
@@ -48,4 +50,20 @@ test("a file that can't be analysed gets a plain message", async ({ page, user: 
   });
   await expect(page.locator("p[role=alert]")).toBeVisible();
   await expect(page).toHaveURL("/runs"); // nothing was started
+});
+
+test("a file over the server's size limit is refused before uploading", async ({ page, user: _ }) => {
+  await page.goto("/runs");
+  // the limit shown comes from the server (10 MB on the free 1 GB server, 50 MB otherwise)
+  const limitMb = Number((await page.getByText(/CSV up to \d+ MB/).innerText()).match(/(\d+) MB/)![1]);
+  const big = path.join(tmpdir(), `too-big-${Date.now()}.csv`);
+  const row = "1,2,3,4,5,6,7,8,9,10\n";
+  writeFileSync(big, "a,b,c,d,e,f,g,h,i,j\n" + row.repeat(Math.ceil(((limitMb + 1) * 1024 * 1024) / row.length)));
+  let uploads = 0;
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().endsWith("/api/backend/runs")) uploads += 1;
+  });
+  await page.setInputFiles("input[type=file]", big);
+  await expect(page.locator("p[role=alert]")).toContainText(`limit on this server is ${limitMb} MB`);
+  expect(uploads).toBe(0);
 });

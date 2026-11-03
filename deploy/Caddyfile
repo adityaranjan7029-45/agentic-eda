@@ -1,0 +1,34 @@
+# Caddy: HTTPS certificates (Let's Encrypt, renewed automatically) and the front door.
+# Add another project later with another block, e.g.
+#   other.{$BASE_DOMAIN} { reverse_proxy other-app:8080 }
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	request_body {
+		max_size 60MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# Live progress (Server-Sent Events): pass every event through at once, never compressed.
+	@progress path_regexp ^/api/backend/runs/[^/]+/events$
+	handle @progress {
+		reverse_proxy web:3000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy web:3000
+	}
+}

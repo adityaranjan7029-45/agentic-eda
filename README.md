@@ -5,7 +5,7 @@
 
 **v1 live demo (prototype):** https://agentic-eda-aie24xzwwqtbgf4rqkdezi.streamlit.app/ (may take a minute to wake up)
 
-**Status:** v2 runs end to end: engine, evaluation, LLM layer, agents, API, job queue, GitHub login, Next.js frontend, and the whole stack in Docker Compose with browser and load tests in CI. Public deployment is the last step in progress. Full step-by-step history: PRs #1–#16.
+**Status:** v2 runs end to end: engine, evaluation, LLM layer, agents, API, job queue, GitHub login, Next.js frontend, and the whole stack in Docker Compose with browser and load tests in CI. Deployed on a free 1 GB Azure VM behind Caddy (HTTPS), switchable to 4 GB with one command ([`docs/deploy.md`](docs/deploy.md)). Full step-by-step history: PRs #1–#17.
 
 ## v2 at a glance
 
@@ -65,6 +65,11 @@ Under load (40 simultaneous users, 2 workers on 2 vCPUs) the API answers reads i
 median with **0 failed requests**; analyses are limited by worker CPU (~36 per minute).
 The load and browser tests found and fixed three real problems: see [`docs/load-test.md`](docs/load-test.md).
 
+**Production:** GitHub Actions publishes the images after every green build on `main`; the server
+pulls them and runs `deploy/compose.yml` with Caddy in front. `./deploy/deploy.sh small` fits the
+free 1 GB VM (1 worker, 10 MB uploads, measured peak ~360 MB per analysis); `./deploy/deploy.sh large`
+uses a 4 GB VM (2 workers, 50 MB uploads). See [`docs/deploy.md`](docs/deploy.md).
+
 ## Run v2 locally (development)
 
 ```bash
@@ -81,9 +86,10 @@ uvicorn eda_api.main:app --reload                     # API docs at http://local
 | `api/` | FastAPI app, Postgres models + Alembic migrations, job queue (inline / Redis), `eda-worker` |
 | `web/` | Next.js frontend: GitHub login, API proxy, upload, live progress, reports with Vega-Lite charts |
 | `docker/`, `docker-compose.yml` | images for the API/worker and the website, and the full stack |
+| `deploy/` | production: Caddy, small/large modes, server setup, deploy and backup scripts |
 | `e2e/` | Playwright tests: a real browser against the running stack |
 | `loadtest/` | Locust load test with pass/fail thresholds |
-| `docs/` | benchmark, Docker guide, load-test results |
+| `docs/` | benchmark, Docker guide, load-test results, deployment guide |
 | `app/`, `src/` | v1 prototype (Streamlit + LangGraph), kept for comparison |
 
 ---

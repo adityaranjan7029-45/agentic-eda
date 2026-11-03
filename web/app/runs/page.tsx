@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { RunHistory } from "@/components/RunHistory";
 import { UploadCard } from "@/components/UploadCard";
+import { uploadLimitMb } from "@/lib/csv";
 import { errorMessage } from "@/lib/errors";
 import { apiGet } from "@/lib/server-api";
 import type { RunSummary } from "@/lib/types";
@@ -18,7 +19,7 @@ export default async function RunsPage() {
       <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{name ? `Welcome back, ${name}` : "Your analyses"}</h1>
       <p className="mt-1 text-slate-500">Upload a dataset, or explore a sample. Every report is verified number by number.</p>
       <div className="mt-8 grid gap-6">
-        <UploadCard />
+        <UploadCard maxUploadMb={uploadLimitMb(process.env.MAX_UPLOAD_MB)} />
         {result.ok ? (
           <RunHistory runs={result.data.runs} />
         ) : (

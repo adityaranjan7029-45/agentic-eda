@@ -1,0 +1,155 @@
+# Production stack for one small server (step 16). Used by deploy.sh; not for local use.
+#
+#   internet -> caddy :80/:443 (HTTPS) -> web :3000 -> api :8000 -> postgres, redis, worker(s)
+#
+# Only Caddy is reachable from outside. Images are built by GitHub Actions and pulled
+# from GHCR, so the server never builds anything. Sizes come from small.env / large.env.
+
+name: agentic-eda
+
+x-api-env: &api-env
+  APP_ENV: prod
+  DATABASE_URL: postgresql://eda:${POSTGRES_PASSWORD:?run deploy.sh to create .env}@postgres:5432/eda
+  REDIS_URL: redis://:${REDIS_PASSWORD:?}@redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:?}
+  API_JWT_SECRET: ${API_JWT_SECRET:?}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  UPLOAD_DIR: /data/uploads
+  MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:?}
+  MAX_ROWS: ${MAX_ROWS:?}
+  MAX_COLUMNS: ${MAX_COLUMNS:?}
+  CORS_ORIGINS: '["https://${DOMAIN:?}"]'
+
+x-api-image: &api-image
+  image: ${IMAGE_REPO:?}/agentic-eda-api:${IMAGE_TAG:-latest}
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"          # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?}
+      ACME_EMAIL: ${ACME_EMAIL:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # HTTPS certificates: kept across restarts and resizes
+      - caddy_config:/config
+    mem_limit: 64m
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    <<: *logging
+
+  web:
+    image: ${IMAGE_REPO:?}/agentic-eda-web:${IMAGE_TAG:-latest}
+    environment:
+      AUTH_SECRET: ${AUTH_SECRET:?}
+      AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:?set the live GitHub OAuth app in .env}
+      AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:?}
+      AUTH_URL: https://${DOMAIN:?}
+      API_URL: http://api:8000
+      API_JWT_SECRET: ${API_JWT_SECRET:?}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:?}
+      NODE_OPTIONS: --max-old-space-size=${WEB_HEAP_MB:?}
+    mem_limit: ${WEB_MEM:?}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    <<: *logging
+
+  api:
+    <<: [*api-image, *logging]
+    environment: *api-env
+    volumes:
+      - uploads:/data/uploads
+    mem_limit: ${API_MEM:?}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    <<: [*api-image, *logging]
+    command: ["eda-worker"]
+    environment: *api-env
+    volumes:
+      - uploads:/data/uploads
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: ${WORKERS:?}
+    mem_limit: ${WORKER_MEM:?}
+    stop_grace_period: 60s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  migrate:
+    <<: [*api-image, *logging]
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app/api
+    environment: *api-env
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eda
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: eda
+    command: ["postgres", "-c", "shared_buffers=${PG_SHARED_BUFFERS:?}", "-c", "max_connections=40"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    mem_limit: ${PG_MEM:?}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eda -d eda"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    <<: *logging
+
+  redis:
+    image: redis:7-alpine
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes --maxmemory ${REDIS_MAXMEMORY:?} --maxmemory-policy noeviction"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+    volumes:
+      - redisdata:/data
+    mem_limit: ${REDIS_MEM:?}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    <<: *logging
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
+  caddy_data:
+  caddy_config:
