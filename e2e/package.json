@@ -1,0 +1,16 @@
+{
+  "name": "agentic-eda-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end tests: a real browser against the running stack (docker compose up).",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@auth/core": "0.41.3",
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

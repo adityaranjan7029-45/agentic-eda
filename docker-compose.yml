@@ -1,0 +1,127 @@
+# Agentic EDA: the whole stack with one command.
+#
+#   1. one-time setup (see docs/docker.md): secrets in .env and web/.env.local
+#   2. docker compose up --build        then open http://localhost:3000
+#
+# postgres, redis  -> data in named volumes, health-checked
+# migrate          -> runs Alembic once, then exits (api/worker wait for it)
+# api              -> FastAPI (Redis mode: queues jobs, streams progress)
+# worker x2        -> eda-worker processes that run the analyses
+# web              -> Next.js (login, proxy, UI); the only service the browser talks to
+
+name: agentic-eda
+
+x-api-env: &api-env
+  APP_ENV: prod
+  DATABASE_URL: postgresql://eda:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see docs/docker.md)}@postgres:5432/eda
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+  API_JWT_SECRET: ${API_JWT_SECRET:?set API_JWT_SECRET in .env}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  UPLOAD_DIR: /data/uploads
+
+x-api-image: &api-image
+  build:
+    context: .
+    dockerfile: docker/api.Dockerfile
+  image: agentic-eda-api:local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eda
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: eda
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eda -d eda"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # password read from the container's environment, so it isn't baked into the command line
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *api-image
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app/api
+    environment: *api-env
+    healthcheck:
+      disable: true              # a one-off job, not a server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *api-image
+    environment: *api-env
+    volumes:
+      - uploads:/data/uploads
+    ports:
+      - "127.0.0.1:8000:8000"   # localhost only: the browser goes through web
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    <<: *api-image
+    command: ["eda-worker"]
+    environment: *api-env
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: 2
+    stop_grace_period: 60s       # let a running analysis finish on shutdown
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    image: agentic-eda-web:local
+    env_file:
+      - path: web/.env.local       # AUTH_SECRET, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET
+        required: true
+    environment:
+      API_URL: http://api:8000     # inside the Docker network (overrides the file)
+      API_JWT_SECRET: ${API_JWT_SECRET:?set API_JWT_SECRET in .env}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:

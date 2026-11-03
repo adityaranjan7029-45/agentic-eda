@@ -19,7 +19,8 @@ import eda_api.service as service
 from eda_api.app import create_app
 from eda_api.config import Settings
 from eda_api.db import Run, make_engine, make_sessionmaker
-from eda_api.jobs import LEASES, PROCESSING, QUEUE, InlineBackend, Job, RedisBackend, fernet_for
+from eda_api.jobs import (LEASES, MAX_BLOCK_SECONDS, PROCESSING, QUEUE, InlineBackend, Job, RedisBackend,
+                          connect_redis, fernet_for)
 from eda_api.worker import Worker
 from eda_engine.synth.credit import generate_credit_applications
 
@@ -379,3 +380,13 @@ def test_stream_ends_when_the_run_ends_without_a_final_event(redis_mode, credit_
     threading.Timer(0.5, mark_failed).start()
     events = read_sse(redis_mode.client, run_id)
     assert [(e["stage"], e["status"]) for _, e in events] == [("queued", "queued"), ("done", "failed")]
+
+
+def test_redis_client_waits_longer_than_any_blocking_read():
+    """The socket timeout must outlast XREAD/BLMOVE blocks, or quiet streams crash mid-wait."""
+    import eda_api.app as app_module
+
+    kwargs = connect_redis("redis://:pw@localhost:6379/0").connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] > MAX_BLOCK_SECONDS
+    assert app_module.SSE_WAIT_MS <= MAX_BLOCK_SECONDS * 1000
+    assert Worker.run_once.__defaults__[0] <= MAX_BLOCK_SECONDS

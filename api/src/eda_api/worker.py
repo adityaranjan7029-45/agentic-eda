@@ -14,11 +14,10 @@ import signal
 import threading
 import time
 
-import redis
 
 from eda_api.config import Settings, get_settings
 from eda_api.db import make_engine, make_sessionmaker
-from eda_api.jobs import RedisBackend
+from eda_api.jobs import RedisBackend, connect_redis
 from eda_api.service import fail_stale_run, process_run
 from eda_api.uploads import purge_stale_uploads
 
@@ -68,7 +67,7 @@ def main() -> None:
     settings = get_settings()
     if settings.queue_mode != "redis":
         raise SystemExit("eda-worker needs REDIS_URL (without it, the API runs jobs itself: inline mode)")
-    backend = RedisBackend(redis.Redis.from_url(settings.redis_url), settings.secret_key.get_secret_value(),
+    backend = RedisBackend(connect_redis(settings.redis_url), settings.secret_key.get_secret_value(),
                            settings.key_handover_seconds)
     worker = Worker(settings, backend, make_sessionmaker(make_engine(settings.database_url)))
     stop = threading.Event()

@@ -63,3 +63,14 @@ def test_real_redis_worker_runs_jobs_with_live_events(tmp_path, monkeypatch):
     assert list((tmp_path / "uploads").glob("*")) == []
     client_redis.flushdb()
     time.sleep(0)
+
+
+def test_a_quiet_progress_stream_outlasts_the_redis_socket_timeout():
+    """A run waiting in the queue sends no events for a while; the 15 s blocking read must not
+    crash. redis-py 8 defaults to a 5 s socket timeout, which broke this (found in step 15)."""
+    from eda_api.jobs import MAX_BLOCK_SECONDS, RedisBackend, connect_redis
+
+    backend = RedisBackend(connect_redis(URL), SECRET)
+    started = time.monotonic()
+    assert backend.events("no-such-run", block_ms=7_000) == []
+    assert 6.5 < time.monotonic() - started < MAX_BLOCK_SECONDS

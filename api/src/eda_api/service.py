@@ -71,6 +71,10 @@ def _key_source(report_tokens: dict) -> str:
 def accept_run(session: Session, user: User, source: BinaryIO, filename: str, target: str | None,
                settings: Settings) -> tuple[Run, Job]:
     """Validate the upload and store a queued run. Raises UploadRejected (nothing stored, file deleted)."""
+    # Lock this user's row until we commit, so simultaneous uploads from one user are counted
+    # one after another (otherwise three at once could all see "1 active" and all start).
+    # Postgres only; SQLite ignores FOR UPDATE but only runs in dev.
+    session.execute(select(User.id).where(User.id == user.id).with_for_update())
     active = session.scalar(select(func.count()).select_from(Run)
                             .where(Run.user_id == user.id, Run.status.in_(ACTIVE)))
     if active >= settings.max_active_runs:
