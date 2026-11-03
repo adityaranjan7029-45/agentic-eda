@@ -99,16 +99,60 @@ certificate and checks `https://eda.<your-domain>` answers.
 | Roll back to an earlier version | `IMAGE_TAG=<commit sha> ./deploy/deploy.sh` |
 | Backup now | `./deploy/backup.sh` (also runs nightly at 03:30, keeps 7 in `~/backups`) |
 
+## Where each command runs
+
+| Where | Prompt looks like | Used for |
+|---|---|---|
+| **PowerShell on your PC** | `PS E:\agentic-eda>` | git, pushing code, SSH into the VM |
+| **Bash on the VM** (after SSH) | `azureuser@agentic-eda:~$` | `server-setup.sh`, `deploy.sh`, logs, backups |
+| **Azure Cloud Shell** (`>_` icon in the portal, choose Bash) | `you@Azure:~$` | managing Azure itself, e.g. resizing the VM (same as the portal clicks) |
+
+Log in to the VM from your PC:
+
+```powershell
+ssh -i $HOME\.ssh\azure_eda azureuser@<VM-IP>
+```
+
+Your VM: resource group `agentic-eda`, name `agentic-eda`, region India South Central.
+
 ## Switching between free and 4 GB
 
-**Up (an interview, a demo day):**
-1. Azure portal → VM → **Size** → `B2als_v2` (or `B2s`) → **Resize**; wait for *Running*.
-2. `./deploy/deploy.sh large`
+What changes is in `deploy/small.env` and `deploy/large.env` (workers, upload limits, memory caps);
+`deploy/compose.yml` reads them and `deploy.sh small|large` picks one. The VM size itself is changed in Azure.
 
-**Back down (afterwards):**
-1. `./deploy/deploy.sh small` first, so the app already fits in 1 GB.
-2. Portal → VM → **Size** → `B2ats_v2` → **Resize**.
+| Mode | VM size | Workers | Max upload |
+|---|---|---|---|
+| small (normal, free) | `Standard_B2ats_v2` (1 GB) | 1 | 10 MB |
+| large (busy days, credit) | `Standard_B2als_v2` (4 GB), or `Standard_B2s` | 2 | 50 MB |
+
+**Up (an interview, a demo day):**
+
+1. Resize the VM, in **Cloud Shell (Bash)**:
+   ```bash
+   az vm resize -g agentic-eda -n agentic-eda --size Standard_B2als_v2
+   ```
+   or in the portal: VM → **Size** → `B2als_v2` → **Resize**. The VM restarts (~2 minutes).
+2. On your **PC**: `ssh -i $HOME\.ssh\azure_eda azureuser@<VM-IP>`
+3. On the **VM**:
+   ```bash
+   cd ~/agentic-eda && ./deploy/deploy.sh large
+   ```
+4. Set a reminder to switch back.
+
+**Back down (afterwards), app first, then the VM:**
+
+1. On the **VM**:
+   ```bash
+   cd ~/agentic-eda && ./deploy/deploy.sh small
+   ```
+2. In **Cloud Shell (Bash)**:
+   ```bash
+   az vm resize -g agentic-eda -n agentic-eda --size Standard_B2ats_v2
+   ```
+   or in the portal: VM → **Size** → `B2ats_v2` → **Resize**.
 3. Next day: **Cost Management → Cost analysis** should be back to about $0 a day.
+
+Check the current mode any time on the VM: `./deploy/deploy.sh status`.
 
 `deploy.sh large` refuses to run on a VM with less than ~3 GB of RAM, so the order can't
 go wrong in that direction. The IP, disk, database and HTTPS certificate survive a resize.
