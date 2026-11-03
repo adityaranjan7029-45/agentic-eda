@@ -125,6 +125,17 @@ What changes is in `deploy/small.env` and `deploy/large.env` (workers, upload li
 | small (normal, free) | `Standard_B2ats_v2` (1 GB) | 1 | 10 MB |
 | large (busy days, credit) | `Standard_B2als_v2` (4 GB), or `Standard_B2s` | 2 | 50 MB |
 
+**Why two places?** They control two different things:
+
+| Where | What it changes | Why it's separate |
+|---|---|---|
+| **Azure** (portal or Cloud Shell) | the **hardware**: 1 GB ⇄ 4 GB RAM | only Azure can change the machine's size |
+| **The VM** (over SSH, `deploy.sh`) | the **app's settings**: workers, upload limit, memory caps | only the server knows how the app runs |
+
+Order matters: going **up**, resize first (more room), then `deploy.sh large`. Going **down**, `deploy.sh small`
+first (the app shrinks), then resize. `deploy.sh large` refuses to run on a VM with less than ~3 GB, so it can't
+overload the free server by mistake.
+
 **Up (an interview, a demo day):**
 
 1. Resize the VM, in **Cloud Shell (Bash)**:
