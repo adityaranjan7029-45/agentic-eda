@@ -3,11 +3,11 @@
 
 > **A credit-risk EDA engine where statistics find the insights and an LLM only writes them up, with every number checked by a deterministic Critic before anyone sees it.**
 
-**🚀 Live app (v2):** https://eda.aditya-ran-jan.dev (sign in with GitHub, then "Try a sample credit dataset")
+**🚀 Live app (v2):** https://eda.adityaranjan.me (sign in with GitHub, then "Try a sample credit dataset")
 
 **v1 prototype:** https://agentic-eda-aie24xzwwqtbgf4rqkdezi.streamlit.app/ (may take a minute to wake up)
 
-**Status:** v2 runs end to end: engine, evaluation, LLM layer, agents, API, job queue, GitHub login, Next.js frontend, and the whole stack in Docker Compose with browser and load tests in CI. Live at **eda.aditya-ran-jan.dev** on a free 1 GB Azure VM behind Caddy (HTTPS), switchable to 4 GB with one command ([`docs/deploy.md`](docs/deploy.md)). Full step-by-step history: PRs #1–#17.
+**Status:** v2 runs end to end: engine, evaluation, LLM layer, agents, API, job queue, GitHub login, Next.js frontend, and the whole stack in Docker Compose with browser and load tests in CI. Live at **eda.adityaranjan.me** on a free 1 GB Azure VM behind Caddy (HTTPS), switchable to 4 GB with one command ([`docs/deploy.md`](docs/deploy.md)). Full step-by-step history: PRs #1–#17.
 
 ## v2 at a glance
 
