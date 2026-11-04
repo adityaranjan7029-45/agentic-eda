@@ -1,11 +1,16 @@
 /**
- * Auth.js (NextAuth v5): GitHub login, session kept in an encrypted httpOnly cookie.
+ * Auth.js (NextAuth v5): GitHub and (when configured) Google login, session kept in an
+ * encrypted httpOnly cookie. Each provider reads its keys from AUTH_<PROVIDER>_ID / _SECRET.
  *
  * No database adapter: the API creates the user row in Postgres on the first
- * request, keyed by provider + GitHub account id (emails can change or be private).
+ * request, keyed by provider + account id (emails can change or be private). The same
+ * person signing in with GitHub and with Google gets two separate accounts.
  */
 import NextAuth from "next-auth";
 import GitHub from "next-auth/providers/github";
+import Google from "next-auth/providers/google";
+
+import { enabledProviders } from "@/lib/providers";
 
 declare module "next-auth" {
   interface Session {
@@ -20,7 +25,7 @@ declare module "next-auth" {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  providers: [GitHub],
+  providers: enabledProviders().map((id) => (id === "google" ? Google : GitHub)),
   session: { strategy: "jwt", maxAge: 7 * 24 * 60 * 60 },
   trustHost: true, // self-hosted behind Caddy (step 16): trust the forwarded host
   callbacks: {

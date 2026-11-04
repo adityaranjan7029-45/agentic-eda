@@ -85,6 +85,19 @@ def test_two_accounts_with_the_same_email_are_different_users(client):
         assert s.query(User).count() == 2
 
 
+def test_google_accounts_work_and_are_separate_from_github(client):
+    """Google sign-in (sub = Google's 21-digit account id) is just another provider:
+    the same email on GitHub and Google is two users, each seeing only their own runs."""
+    from eda_api.db import User
+
+    google = bearer(token(sub="google:109876543210987654321"))
+    assert me(client, google) == 200
+    assert me(client, bearer(token())) == 200            # github:583231, same email
+    with client.app.state.sessionmaker() as s:
+        identities = sorted((u.auth_provider, u.auth_subject) for u in s.query(User).all())
+    assert identities == [("github", "583231"), ("google", "109876543210987654321")]
+
+
 def test_missing_email_is_fine(client):
     assert me(client, bearer(token(email=None))) == 200
 

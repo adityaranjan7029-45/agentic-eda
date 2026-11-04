@@ -42,6 +42,9 @@ if [ ! -f "$ENV_FILE" ]; then
   read -rp "Email for HTTPS certificate notices: " email
   read -rp "Live GitHub OAuth app - Client ID: " gh_id
   read -rsp "Live GitHub OAuth app - Client secret (hidden): " gh_secret; echo
+  read -rp "Google OAuth client ID (optional, Enter to skip): " google_id
+  google_secret=""
+  if [ -n "$google_id" ]; then read -rsp "Google OAuth client secret (hidden): " google_secret; echo; fi
   read -rsp "Server Groq API key (optional, Enter to skip; hidden): " groq; echo
   umask 077
   cat > "$ENV_FILE" <<ENV
@@ -51,6 +54,8 @@ ACME_EMAIL=$email
 IMAGE_REPO=ghcr.io/adityaranjan7029-45
 AUTH_GITHUB_ID=$gh_id
 AUTH_GITHUB_SECRET=$gh_secret
+AUTH_GOOGLE_ID=$google_id
+AUTH_GOOGLE_SECRET=$google_secret
 GROQ_API_KEY=$groq
 AUTH_SECRET=$(secret)
 API_JWT_SECRET=$(secret)
