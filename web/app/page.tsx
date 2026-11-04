@@ -1,7 +1,8 @@
-import { BarChart3, CheckCircle2, FileSearch, Scale, ShieldCheck, Sparkles, Upload } from "lucide-react";
+import { BarChart3, CheckCircle2, FileSearch, LogIn, Scale, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { redirect } from "next/navigation";
 
 import { auth, signIn } from "@/auth";
+import { PROVIDER_LABEL, type ProviderId, enabledProviders } from "@/lib/providers";
 
 const PROOF = [
   { value: "100%", label: "planted risk drivers found", note: "held-out data, 5,000+ rows" },
@@ -42,19 +43,32 @@ function GitHubMark() {
   );
 }
 
-function SignIn({ large = false }: { large?: boolean }) {
+function SignInButton({ provider, large, primary }: { provider: ProviderId; large: boolean; primary: boolean }) {
   return (
     <form
       action={async () => {
         "use server";
-        await signIn("github", { redirectTo: "/runs" });
+        await signIn(provider, { redirectTo: "/runs" });
       }}
     >
-      <button type="submit" className={`btn-primary ${large ? "px-6 py-3.5 text-base" : ""}`}>
-        <GitHubMark />
-        Sign in with GitHub
+      <button
+        type="submit"
+        className={`${primary ? "btn-primary" : "btn-secondary"} ${large ? "px-6 py-3.5 text-base" : ""}`}
+      >
+        {provider === "github" ? <GitHubMark /> : <LogIn aria-hidden className="h-5 w-5" />}
+        Sign in with {PROVIDER_LABEL[provider]}
       </button>
     </form>
+  );
+}
+
+function SignIn({ large = false, center = false }: { large?: boolean; center?: boolean }) {
+  return (
+    <div className={`flex flex-wrap items-center gap-3 ${center ? "justify-center" : ""}`}>
+      {enabledProviders().map((provider, i) => (
+        <SignInButton key={provider} provider={provider} large={large} primary={i === 0} />
+      ))}
+    </div>
   );
 }
 
@@ -184,8 +198,8 @@ export default async function Home() {
         <p className="mx-auto mt-3 max-w-xl text-slate-600 dark:text-slate-400">
           Sign in and press &ldquo;Try a sample credit dataset&rdquo;: a full report in under a minute, nothing to upload.
         </p>
-        <div className="mt-6 flex justify-center">
-          <SignIn />
+        <div className="mt-6">
+          <SignIn center />
         </div>
       </section>
     </div>

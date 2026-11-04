@@ -28,6 +28,15 @@ describe("mintApiToken", () => {
     await expect(jwtVerify(token, key)).rejects.toThrow(/exp/);
   });
 
+  it("signs Google identities the same way", async () => {
+    const token = await mintApiToken({ provider: "google", accountId: "109876543210987654321" }, SECRET);
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(SECRET), {
+      issuer: "agentic-eda-web",
+      audience: "agentic-eda-api",
+    });
+    expect(payload.sub).toBe("google:109876543210987654321");
+  });
+
   it("omits missing profile fields", async () => {
     const token = await mintApiToken({ provider: "github", accountId: "1" }, SECRET);
     const { payload } = await jwtVerify(token, key);

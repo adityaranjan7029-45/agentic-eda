@@ -57,6 +57,8 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:?}
       AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:?set the live GitHub OAuth app in .env}
       AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:?}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}           # optional: Google sign-in appears when both are set
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
       AUTH_URL: https://${DOMAIN:?}
       API_URL: http://api:8000
       API_JWT_SECRET: ${API_JWT_SECRET:?}

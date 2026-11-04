@@ -67,6 +67,33 @@ GitHub → **Settings → Developer settings → OAuth Apps → New OAuth App**:
 Copy the **Client ID**, then **Generate a new client secret** and copy it (shown once).
 Keep the local app from step 13 for `localhost`.
 
+### 4b. Google sign-in (optional, recommended for business users)
+
+The "Sign in with Google" button appears (first) as soon as the server has a Google OAuth client;
+without one, only GitHub is shown. Users are stored as (provider, account id), so the same person
+signing in with GitHub and with Google gets two separate accounts.
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → create a project (e.g. `agentic-eda`).
+2. **APIs & Services → OAuth consent screen** (also called *Google Auth Platform → Branding*):
+   User type **External**; app name `Agentic EDA`; your support email; app home page `https://eda.<your-domain>`;
+   scopes: only the defaults (`openid`, `email`, `profile`). Don't upload a logo (that triggers Google's verification).
+3. **Audience** → **Publish app** (status *In production*). While it says *Testing*, only the test users
+   you list can sign in.
+4. **Credentials → Create credentials → OAuth client ID** → type **Web application**:
+   - Authorized JavaScript origins: `https://eda.<your-domain>`
+   - Authorized redirect URIs: `https://eda.<your-domain>/api/auth/callback/google`
+   - (for local dev, add `http://localhost:3000` and `http://localhost:3000/api/auth/callback/google`)
+5. Copy the **Client ID** and **Client secret**. On a new server `deploy.sh` asks for them; on an
+   existing one, add them to `~/agentic-eda/.env`:
+   ```bash
+   cd ~/agentic-eda
+   read -rp "Google client ID: " gid; read -rsp "Google client secret (hidden): " gs; echo
+   sed -i '/^AUTH_GOOGLE_/d' .env
+   printf 'AUTH_GOOGLE_ID=%s\nAUTH_GOOGLE_SECRET=%s\n' "$(echo "$gid" | tr -d '[:space:]')" "$(echo "$gs" | tr -d '[:space:]')" >> .env
+   unset gid gs
+   ./deploy/deploy.sh
+   ```
+
 ### 5. Server setup and first deploy
 
 ```powershell
@@ -187,6 +214,8 @@ chat.<your-domain> {
 | `deploy.sh` stops at "didn't answer over HTTPS" | DNS not pointing at the VM yet (`nslookup`), or port 80/443 closed in the Azure network settings; `./deploy/deploy.sh logs caddy` |
 | Sign-in shows "Server error: problem with the server configuration" | `./deploy/deploy.sh logs web`. `incorrect_client_credentials` = wrong GitHub client secret: generate a new one, fix `AUTH_GITHUB_SECRET` in `.env` (no spaces), run `./deploy/deploy.sh` |
 | Pull fails: `denied` / `unauthorized` | the GHCR packages are still private (step 1) |
+| Google says "Error 400: redirect_uri_mismatch" | the redirect URI in the Google client must be exactly `https://eda.<your-domain>/api/auth/callback/google` |
+| Google says "Access blocked: app can only be used within its organization" or only some people can sign in | the consent screen is still in *Testing* or *Internal*: set it to External and **Publish app** |
 | GitHub says "redirect_uri is not associated" | the OAuth app's callback URL doesn't match `https://eda.<your-domain>/api/auth/callback/github` exactly |
 | A run fails with "the server restarted" | the worker ran out of memory: use a smaller file, or switch to large mode |
 | Site slow after a period of heavy use | burstable CPU credits spent; they refill while idle, or resize up |
